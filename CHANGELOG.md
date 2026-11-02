@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.6
+
+- The conversation-header launcher always renders, even before the task list has resolved; with no task it opens the Task Deck panel instead of drawing nothing.
+
 ## 1.1.5
 
 - Fixed the conversation-header Task Deck icon disappearing: the launcher no longer hides behind the optional right-sidebar services, and the right-pane tab type retries for 20s instead of being skipped when `sidebarRightTabs` mounts after this plugin.

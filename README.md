@@ -20,10 +20,10 @@ Built for people who run many conversations and branches at once: see what is ru
 
 ### From a release tarball
 
-Download `dsh-task-deck-1.1.5.tgz` from the latest Release, then ask your DSH agent to run:
+Download `dsh-task-deck-1.1.6.tgz` from the latest Release, then ask your DSH agent to run:
 
 ```text
-plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.5.tgz
+plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.6.tgz
 ```
 
 Refresh the DSH Web GUI. The entry appears near the bottom of the sidebar, beside Plugins and Schedules.

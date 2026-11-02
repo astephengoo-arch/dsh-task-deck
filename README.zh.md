@@ -20,10 +20,10 @@
 
 ### 从 Release 安装包
 
-下载最新 Release 里的 `dsh-task-deck-1.1.5.tgz`，然后让 DSH Agent 执行：
+下载最新 Release 里的 `dsh-task-deck-1.1.6.tgz`，然后让 DSH Agent 执行：
 
 ```text
-plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.5.tgz
+plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.6.tgz
 ```
 
 刷新 DSH Web GUI。入口会出现在侧边栏底部，靠近「插件」和「自动化任务」。

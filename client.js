@@ -2826,8 +2826,19 @@ window.__ModuleLoader__.load({
       const task = findTask(state, props.sessionId)
         || findTask(state, state.sessionTaskId)
         || currentTaskOf(state);
-      if (!task) return null;
+      function openPanelOnly() {
+        try {
+          const layout = ctx.get('layout');
+          if (layout && typeof layout.selectPanel === 'function') layout.selectPanel(PANEL_ID);
+        } catch (error) {
+          /* the panel may not be selectable yet */
+        }
+      }
       function open() {
+        if (!task) {
+          openPanelOnly();
+          return;
+        }
         store.setSessionTask(task.id);
         try {
           const rightbar = ctx.get('sidebarRight');
@@ -2841,23 +2852,22 @@ window.__ModuleLoader__.load({
         // No right sidebar in this build: land on the task so its thread actions stay reachable.
         try {
           store.openTask(task.id);
-          const layout = ctx.get('layout');
-          if (layout && typeof layout.selectPanel === 'function') layout.selectPanel(PANEL_ID);
         } catch (error) {
-          /* the panel may not be selectable yet */
+          /* the store may already be rebuilding */
         }
+        openPanelOnly();
       }
       return h(
         'button',
         {
           type: 'button',
-          className: 'td-headbtn',
+          className: `td-headbtn${task ? '' : ' is-idle'}`,
           title: t('thread.title'),
           'aria-label': t('thread.title'),
           onClick: open,
         },
         h(Icon, { name: 'deck', size: 15 }),
-        h('span', { className: 'td-headdot', style: { background: STATUS_TOKEN[task.status] } }),
+        task ? h('span', { className: 'td-headdot', style: { background: STATUS_TOKEN[task.status] } }) : null,
       );
     }
 
@@ -3369,6 +3379,7 @@ window.__ModuleLoader__.load({
         color: var(--dsw-alias-label-secondary); cursor: pointer;
       }
       .td-headbtn:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+      .td-headbtn.is-idle { opacity: .78; }
       .td-headbtn .td-headdot {
         position: absolute; right: 4px; top: 4px; width: 5px; height: 5px; border-radius: 50%;
         background: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1.5px var(--dsw-alias-bg-base);
