@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Task Deck",
+    "description": "基于真实 DSH 会话的个人任务驾驶舱：聚焦运行/等待状态、Next Action、fork 分支关系，并可从当前会话打开 Thread Panel。"
+  }
+}

@@ -1,0 +1,77 @@
+# Task Deck
+
+[中文](README.zh.md) · English
+
+**Task Deck is a personal mission control for DSH Desktop.** It reads the live DSH session catalog, turns every conversation into a task-shaped card, and keeps your attention on the next useful move.
+
+Built for people who run many conversations and branches at once: see what is running, what is waiting on you, what is blocked, and what is ready for review — then continue, fork, or hand off without losing context.
+
+## Features
+
+- **Sidebar entry** — Task Deck in `sidebar.panellist`, with a badge for Blocked + Review.
+- **Live Dashboard** — real DSH conversations grouped by state, with search and status filters.
+- **Task Detail** — real session title / ID / workspace, running state, fork lineage, an editable personal Next Action, personal checklist, related conversations, review gate.
+- **Task Thread** — a right-sidebar tab and conversation-header launcher bound to the current `sessionId`.
+- **Continue / Fork / Handoff** — open the current conversation, create a real child session with `sessions.fork()`, or fork-and-mark-waiting for a parallel workflow.
+- **Personal annotation layer** — status overrides, Next Action, checks, priority, branch label, and alias are yours; they never rewrite the conversation.
+
+## Install
+
+### From a release tarball
+
+Download `dsh-task-deck-1.1.1.tgz` from the latest Release, then ask your DSH agent to run:
+
+```text
+plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.1.tgz
+```
+
+Refresh the DSH Web GUI. The entry appears near the bottom of the sidebar, beside Plugins and Schedules.
+
+### From a source checkout
+
+```bash
+git clone https://github.com/astephengoo-arch/dsh-task-deck.git
+```
+
+Then:
+
+```text
+plugin_manager install_bundle /absolute/path/to/dsh-task-deck
+```
+
+## How the data works
+
+| Layer | Source |
+|---|---|
+| Session identity, title, workspace, running/idle, recent activity, fork parent | `ctx.sessions.list` |
+| Status override, Next Action, checklist, priority, branch label, alias | Personal annotations in `localStorage` (`dsh.taskDeck.annotations.v1`) |
+| Continue | `ctx.uiWorkspace.openSession(sessionId)` |
+| Fork / Handoff | `ctx.sessions.fork({ sessionId, increaseTitle: true })` |
+
+Task Deck never copies transcripts. `Active` is a live runtime fact: a session is Active while its agent is running, and returns to Waiting (or your manual Blocked / Review / Done) when it stops.
+
+## Requirements
+
+- DSH `>= 0.2.1-rc.5`
+- Web/Desktop Client with `sidebarRightTabs` and `sidebarRight`
+
+## Development
+
+The plugin is plain JavaScript and has no build step.
+
+```bash
+node --check client.js
+node --check index.js
+```
+
+Design notes: [docs/DESIGN.md](docs/DESIGN.md). Publishing notes: [docs/PUBLISHING.md](docs/PUBLISHING.md).
+
+## Privacy
+
+- Reads DSH session metadata (title, id, workspace, running state, fork relation).
+- Stores only personal annotations in browser `localStorage`.
+- No transcript upload, no analytics, no external network calls.
+
+## License
+
+MIT

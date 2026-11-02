@@ -1,0 +1,4 @@
+- insert:
+    - id: task-deck
+      name: '@local/dsh-task-deck'
+      config: {}
