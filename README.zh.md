@@ -75,6 +75,10 @@ node --check index.js
 - 只把个人标注保存在浏览器 `localStorage`。
 - 不上传对话、不接分析服务、不发起外部网络请求。
 
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/astephengoo-arch/dsh-task-deck)
+
+<img width="3380" height="1840" alt="image" src="https://github.com/user-attachments/assets/6d22b22b-b99c-4d85-9611-f3ef6f1311ae" />
+
 ## License
 
 MIT
