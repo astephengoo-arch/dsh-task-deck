@@ -1493,10 +1493,33 @@ window.__ModuleLoader__.load({
                   ),
                   h(
                     'div',
-                    { className: 'td-sort' },
-                    h(Icon, { name: 'filter', size: 12 }),
-                    t('dashboard.sortUpdated'),
-                    h(Icon, { name: 'chevronDown', size: 12 }),
+                    { className: 'td-filter-actions' },
+                    h(
+                      'label',
+                      { className: 'td-auto-inline', title: t('auto.hint') },
+                      h(Icon, { name: 'clock', size: 12 }),
+                      h('span', { className: 'td-auto-inline-label' }, t('auto.title')),
+                      h(
+                        'select',
+                        {
+                          value: state.autoDoneDays,
+                          'aria-label': t('auto.title'),
+                          onChange: (event) => store.setAutoDoneDays(Number(event.target.value)),
+                        },
+                        AUTO_DONE_OPTIONS.map((days) => h(
+                          'option',
+                          { key: days, value: days },
+                          days === 0 ? t('auto.never') : fmt(t('auto.days'), { n: days }),
+                        )),
+                      ),
+                    ),
+                    h(
+                      'div',
+                      { className: 'td-sort' },
+                      h(Icon, { name: 'filter', size: 12 }),
+                      t('dashboard.sortUpdated'),
+                      h(Icon, { name: 'chevronDown', size: 12 }),
+                    ),
                   ),
                 ),
                 groups.length === 0
@@ -1647,30 +1670,6 @@ window.__ModuleLoader__.load({
                     { className: 'td-session-fact' },
                     h('span', null, t('dashboard.workspaces')),
                     h('strong', null, new Set(state.tasks.map((item) => item.workspace)).size),
-                  ),
-                  h(
-                    'div',
-                    { className: 'td-auto-control' },
-                    h(
-                      'div',
-                      { className: 'td-auto-row' },
-                      h('span', { className: 'td-auto-label' }, t('auto.title')),
-                      h(
-                        'select',
-                        {
-                          className: 'td-auto-select',
-                          value: state.autoDoneDays,
-                          'aria-label': t('auto.title'),
-                          onChange: (event) => store.setAutoDoneDays(Number(event.target.value)),
-                        },
-                        AUTO_DONE_OPTIONS.map((days) => h(
-                          'option',
-                          { key: days, value: days },
-                          days === 0 ? t('auto.never') : fmt(t('auto.days'), { n: days }),
-                        )),
-                      ),
-                    ),
-                    h('p', { className: 'td-rail-hint', style: { margin: '5px 0 0' } }, t('auto.hint')),
                   ),
                 ),
               ),
@@ -2895,7 +2894,11 @@ window.__ModuleLoader__.load({
         color: var(--dsw-alias-label-secondary); font-size: 10px; font-variant-numeric: tabular-nums;
       }
       .td-grid { display: grid; grid-template-columns: minmax(0, 1fr) 286px; gap: 24px; padding-top: 16px; }
-      .td-filterbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; margin-bottom: 9px; }
+      .td-filterbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; margin-bottom: 9px; flex-wrap: wrap; }
+      .td-filter-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+      .td-auto-inline { display: inline-flex; align-items: center; gap: 5px; color: var(--dsw-alias-label-secondary); font-size: 10.5px; white-space: nowrap; cursor: pointer; }
+      .td-auto-inline select { height: 24px; padding: 0 5px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; outline: 0; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-secondary); font: inherit; font-size: 10px; cursor: pointer; }
+      .td-auto-inline select:focus { border-color: var(--dsw-alias-brand-primary); }
       .td-chips { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
       .td-chip {
         display: inline-flex; align-items: center; gap: 6px; height: 27px; padding: 0 9px;
@@ -2992,11 +2995,6 @@ window.__ModuleLoader__.load({
       .td-session-fact { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 27px; border-top: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); font-size: 10.5px; }
       .td-session-fact:first-of-type { border-top: 0; }
       .td-session-fact strong { color: var(--dsw-alias-label-primary); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
-      .td-auto-control { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--dsw-alias-border-l1); }
-      .td-auto-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-      .td-auto-label { color: var(--dsw-alias-label-primary); font-size: 10.5px; font-weight: 560; }
-      .td-auto-select { height: 24px; padding: 0 5px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; outline: 0; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-secondary); font: inherit; font-size: 10px; }
-      .td-auto-select:focus { border-color: var(--dsw-alias-brand-primary); }
       .td-auto-note { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 13px; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--dsw-alias-state-idle-primary) 24%, var(--dsw-alias-border-l1)); border-radius: 8px; background: color-mix(in srgb, var(--dsw-alias-state-idle-primary) 5%, transparent); color: var(--dsw-alias-label-secondary); font-size: 10.5px; line-height: 1.5; }
       .td-auto-note > span { flex: 1; min-width: 180px; }
       .td-thread-auto { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); font-size: 9.5px; line-height: 1.45; }
@@ -3286,6 +3284,9 @@ window.__ModuleLoader__.load({
       }
       @media (max-width: 760px) {
         .td-inner, .td-detail { padding-left: 18px; padding-right: 18px; }
+        .td-filter-actions { width: 100%; justify-content: space-between; }
+        .td-sort { display: none; }
+        .td-auto-inline-label { display: none; }
         .td-topbar { flex-direction: column; gap: 14px; }
         .td-actions { width: 100%; }
         .td-search { width: 100%; flex: 1; }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.3
+
+- Moved the Auto-complete threshold control from the low right rail into the task filter bar, so it is visible without scrolling and stays available on narrow layouts.
+- Kept the control visible when the right rail is hidden; the sort label collapses first on small screens.
+
 ## 1.1.2
 
 - Added idle auto-complete: non-running sessions with no manual status become Done after 7/14/30 days (default 14).
