@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.4
+
+- Expanded idle auto-complete thresholds to hour-level options: 1h, 3h, 6h, 12h, 1d, 3d, 7d, 14d, 30d, Never.
+- Migrated the previous `autoDoneDays` setting to `autoDoneHours`.
+- Default remains 14 days (336 hours).
+- Auto-done notices now use the same human-readable duration as the selector.
+
 ## 1.1.3
 
 - Moved the Auto-complete threshold control from the low right rail into the task filter bar, so it is visible without scrolling and stays available on narrow layouts.

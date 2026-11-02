@@ -14,16 +14,16 @@
 - **Task Thread** — 当前会话右侧的任务面板，以及会话 Header 快捷入口。
 - **继续 / 分支 / 交接** — 打开当前会话；用 `sessions.fork()` 创建真实子会话；或 fork 后标记为 Waiting 交给并行工作流。
 - **个人标注层** — 状态覆盖、Next Action、检查项、优先级、分支标签和 alias 都属于你，不会改写对话内容。
-- **久未活动自动完成** — 会话空闲超过 7/14/30 天（默认 14 天）会自动移到已完成。手动设为等待可保持打开；在状态里选「自动」可恢复规则。
+- **久未活动自动完成** — 会话空闲时间可从 1 小时到 30 天（默认 14 天），超过阈值会自动移到已完成。手动设为等待可保持打开；在状态里选「自动」可恢复规则。
 
 ## 安装
 
 ### 从 Release 安装包
 
-下载最新 Release 里的 `dsh-task-deck-1.1.3.tgz`，然后让 DSH Agent 执行：
+下载最新 Release 里的 `dsh-task-deck-1.1.4.tgz`，然后让 DSH Agent 执行：
 
 ```text
-plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.3.tgz
+plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.4.tgz
 ```
 
 刷新 DSH Web GUI。入口会出现在侧边栏底部，靠近「插件」和「自动化任务」。

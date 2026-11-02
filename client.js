@@ -187,8 +187,11 @@ window.__ModuleLoader__.load({
       'auto.hint': 'Conversations idle beyond this window move to Done based on their last activity. Set Waiting to keep one open; choose Auto in status to return to this rule.',
       'auto.after': 'Idle after',
       'auto.days': '{n} days',
+      'auto.dayOne': '1 day',
+      'auto.hours': '{n} hours',
+      'auto.hourOne': '1 hour',
       'auto.never': 'Never',
-      'auto.doneLabel': 'Auto-completed after {days} days without activity.',
+      'auto.doneLabel': 'Auto-completed after {duration} without activity.',
       'auto.reopen': 'Reopen as Waiting',
       'auto.manual': 'Kept open manually',
       'auto.doneShort': 'Auto-done',
@@ -411,8 +414,11 @@ window.__ModuleLoader__.load({
       'auto.hint': '超过这个时间没有活动的对话，会按最近活动自动移到已完成。设为等待可保持打开；在状态里选「自动」可恢复此规则。',
       'auto.after': '空闲超过',
       'auto.days': '{n} 天',
+      'auto.dayOne': '1 天',
+      'auto.hours': '{n} 小时',
+      'auto.hourOne': '1 小时',
       'auto.never': '从不',
-      'auto.doneLabel': '超过 {days} 天没有活动，已自动标记为完成。',
+      'auto.doneLabel': '超过 {duration} 没有活动，已自动标记为完成。',
       'auto.reopen': '重新打开为等待',
       'auto.manual': '已手动保持打开',
       'auto.doneShort': '自动完成',
@@ -494,8 +500,8 @@ window.__ModuleLoader__.load({
 
     const ANNOTATION_KEY = 'dsh.taskDeck.annotations.v1';
     const SETTINGS_KEY = 'dsh.taskDeck.settings.v1';
-    const AUTO_DONE_OPTIONS = [0, 7, 14, 30];
-    const DEFAULT_AUTO_DONE_DAYS = 14;
+    const AUTO_DONE_HOURS_OPTIONS = [0, 1, 3, 6, 12, 24, 72, 168, 336, 720];
+    const DEFAULT_AUTO_DONE_HOURS = 336;
     const EMPTY_LIST = Object.freeze({
       ids: [],
       byId: {},
@@ -543,16 +549,28 @@ window.__ModuleLoader__.load({
       }
     }
 
+    function autoWindowLabel(hours, t) {
+      if (!hours) return t('auto.never');
+      if (hours === 24) return t('auto.dayOne');
+      if (hours % 24 === 0) return fmt(t('auto.days'), { n: hours / 24 });
+      if (hours === 1) return t('auto.hourOne');
+      return fmt(t('auto.hours'), { n: hours });
+    }
+
     function loadSettings() {
       try {
         const raw = window.localStorage.getItem(SETTINGS_KEY);
         const parsed = raw ? JSON.parse(raw) : null;
-        const days = parsed && Number(parsed.autoDoneDays);
+        const hours = parsed && Number(parsed.autoDoneHours);
+        const legacyDays = parsed && Number(parsed.autoDoneDays);
+        const resolved = Number.isFinite(hours) && hours >= 0
+          ? hours
+          : (Number.isFinite(legacyDays) && legacyDays >= 0 ? legacyDays * 24 : DEFAULT_AUTO_DONE_HOURS);
         return {
-          autoDoneDays: AUTO_DONE_OPTIONS.includes(days) ? days : DEFAULT_AUTO_DONE_DAYS,
+          autoDoneHours: AUTO_DONE_HOURS_OPTIONS.includes(resolved) ? resolved : DEFAULT_AUTO_DONE_HOURS,
         };
       } catch (error) {
-        return { autoDoneDays: DEFAULT_AUTO_DONE_DAYS };
+        return { autoDoneHours: DEFAULT_AUTO_DONE_HOURS };
       }
     }
 
@@ -613,9 +631,9 @@ window.__ModuleLoader__.load({
         const idleMs = lastActivity > 0 ? Math.max(0, now - lastActivity) : 0;
         const autoDone = !summary.running
           && !manualStatus
-          && settings.autoDoneDays > 0
+          && settings.autoDoneHours > 0
           && lastActivity > 0
-          && idleMs >= settings.autoDoneDays * 86_400_000;
+          && idleMs >= settings.autoDoneHours * 3_600_000;
         const status = summary.running ? 'active' : (manualStatus || (autoDone ? 'done' : 'waiting'));
         const parentId = summary.parentId || null;
         const forks = [];
@@ -731,7 +749,7 @@ window.__ModuleLoader__.load({
           tasks,
           phase: listSnapshot.phase || 'pending',
           annotations,
-          autoDoneDays: settings.autoDoneDays,
+          autoDoneHours: settings.autoDoneHours,
         };
         return cached;
       }
@@ -774,11 +792,11 @@ window.__ModuleLoader__.load({
         localeChanged() {
           notify();
         },
-        setAutoDoneDays(days) {
-          const value = Number(days);
+        setAutoDoneHours(hours) {
+          const value = Number(hours);
           settings = {
             ...settings,
-            autoDoneDays: AUTO_DONE_OPTIONS.includes(value) ? value : DEFAULT_AUTO_DONE_DAYS,
+            autoDoneHours: AUTO_DONE_HOURS_OPTIONS.includes(value) ? value : DEFAULT_AUTO_DONE_HOURS,
           };
           saveSettings(settings);
           notify();
@@ -1502,14 +1520,14 @@ window.__ModuleLoader__.load({
                       h(
                         'select',
                         {
-                          value: state.autoDoneDays,
+                          value: state.autoDoneHours,
                           'aria-label': t('auto.title'),
-                          onChange: (event) => store.setAutoDoneDays(Number(event.target.value)),
+                          onChange: (event) => store.setAutoDoneHours(Number(event.target.value)),
                         },
-                        AUTO_DONE_OPTIONS.map((days) => h(
+                        AUTO_DONE_HOURS_OPTIONS.map((hours) => h(
                           'option',
-                          { key: days, value: days },
-                          days === 0 ? t('auto.never') : fmt(t('auto.days'), { n: days }),
+                          { key: hours, value: hours },
+                          autoWindowLabel(hours, t),
                         )),
                       ),
                     ),
@@ -1788,7 +1806,7 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'td-auto-note' },
             h(Icon, { name: 'clock', size: 13 }),
-            h('span', null, fmt(t('auto.doneLabel'), { days: state.autoDoneDays })),
+            h('span', null, fmt(t('auto.doneLabel'), { duration: autoWindowLabel(state.autoDoneHours, t) })),
             h(
               'button',
               {
@@ -2586,7 +2604,7 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'td-thread-auto' },
             h(Icon, { name: 'clock', size: 12 }),
-            h('span', null, fmt(t('auto.doneLabel'), { days: state.autoDoneDays })),
+            h('span', null, fmt(t('auto.doneLabel'), { duration: autoWindowLabel(state.autoDoneHours, t) })),
             h(
               'button',
               {

@@ -14,16 +14,16 @@ Built for people who run many conversations and branches at once: see what is ru
 - **Task Thread** — a right-sidebar tab and conversation-header launcher bound to the current `sessionId`.
 - **Continue / Fork / Handoff** — open the current conversation, create a real child session with `sessions.fork()`, or fork-and-mark-waiting for a parallel workflow.
 - **Personal annotation layer** — status overrides, Next Action, checks, priority, branch label, and alias are yours; they never rewrite the conversation.
-- **Idle auto-complete** — conversations idle for 7/14/30 days (default 14) move to Done automatically. Manual Waiting keeps one open; choose Auto to return to the rule.
+- **Idle auto-complete** — conversations idle from 1 hour to 30 days (default 14 days) move to Done automatically. Manual Waiting keeps one open; choose Auto to return to the rule.
 
 ## Install
 
 ### From a release tarball
 
-Download `dsh-task-deck-1.1.3.tgz` from the latest Release, then ask your DSH agent to run:
+Download `dsh-task-deck-1.1.4.tgz` from the latest Release, then ask your DSH agent to run:
 
 ```text
-plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.3.tgz
+plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.4.tgz
 ```
 
 Refresh the DSH Web GUI. The entry appears near the bottom of the sidebar, beside Plugins and Schedules.
