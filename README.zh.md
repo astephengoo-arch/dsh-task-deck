@@ -14,15 +14,16 @@
 - **Task Thread** — 当前会话右侧的任务面板，以及会话 Header 快捷入口。
 - **继续 / 分支 / 交接** — 打开当前会话；用 `sessions.fork()` 创建真实子会话；或 fork 后标记为 Waiting 交给并行工作流。
 - **个人标注层** — 状态覆盖、Next Action、检查项、优先级、分支标签和 alias 都属于你，不会改写对话内容。
+- **久未活动自动完成** — 会话空闲超过 7/14/30 天（默认 14 天）会自动移到已完成。手动设为等待可保持打开；在状态里选「自动」可恢复规则。
 
 ## 安装
 
 ### 从 Release 安装包
 
-下载最新 Release 里的 `dsh-task-deck-1.1.1.tgz`，然后让 DSH Agent 执行：
+下载最新 Release 里的 `dsh-task-deck-1.1.2.tgz`，然后让 DSH Agent 执行：
 
 ```text
-plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.1.tgz
+plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.1.2.tgz
 ```
 
 刷新 DSH Web GUI。入口会出现在侧边栏底部，靠近「插件」和「自动化任务」。
@@ -49,6 +50,8 @@ plugin_manager install_bundle /absolute/path/to/dsh-task-deck
 | 分支 / 交接 | `ctx.sessions.fork({ sessionId, increaseTitle: true })` |
 
 Task Deck 不复制对话正文。`Active` 是实时运行事实：Agent 在跑时显示 Active，停止后自动回到 Waiting（或你手动标记的 Blocked / Review / Done）。
+
+`Done` 可以是手动或自动。自动完成依据最近活动时间：非运行中的会话如果超过设定空闲时间且没有手动状态，就自动变为已完成。手动设为等待可以保持打开；在状态下拉里选「自动」可恢复自动规则。
 
 ## 环境要求
 

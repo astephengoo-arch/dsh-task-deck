@@ -183,6 +183,16 @@ window.__ModuleLoader__.load({
       'dashboard.noSessions': 'No conversations yet',
       'dashboard.noSessionsHint': 'Start a conversation from the sidebar; it will appear here automatically.',
       'session.blank': 'New conversation',
+      'auto.title': 'Auto-complete',
+      'auto.hint': 'Conversations idle beyond this window move to Done based on their last activity. Set Waiting to keep one open; choose Auto in status to return to this rule.',
+      'auto.after': 'Idle after',
+      'auto.days': '{n} days',
+      'auto.never': 'Never',
+      'auto.doneLabel': 'Auto-completed after {days} days without activity.',
+      'auto.reopen': 'Reopen as Waiting',
+      'auto.manual': 'Kept open manually',
+      'auto.doneShort': 'Auto-done',
+      'auto.statusAuto': 'Auto (from activity)',
       'session.untitled': 'Untitled conversation',
       'session.noWorkspace': 'No workspace',
       'session.conversation': 'Conversation',
@@ -397,6 +407,16 @@ window.__ModuleLoader__.load({
       'dashboard.noSessions': '还没有会话',
       'dashboard.noSessionsHint': '从侧边栏开始一段对话，它会自动出现在这里。',
       'session.blank': '新会话',
+      'auto.title': '自动完成',
+      'auto.hint': '超过这个时间没有活动的对话，会按最近活动自动移到已完成。设为等待可保持打开；在状态里选「自动」可恢复此规则。',
+      'auto.after': '空闲超过',
+      'auto.days': '{n} 天',
+      'auto.never': '从不',
+      'auto.doneLabel': '超过 {days} 天没有活动，已自动标记为完成。',
+      'auto.reopen': '重新打开为等待',
+      'auto.manual': '已手动保持打开',
+      'auto.doneShort': '自动完成',
+      'auto.statusAuto': '自动（按活动判断）',
       'session.untitled': '未命名会话',
       'session.noWorkspace': '未绑定工作区',
       'session.conversation': '会话',
@@ -473,6 +493,9 @@ window.__ModuleLoader__.load({
     }
 
     const ANNOTATION_KEY = 'dsh.taskDeck.annotations.v1';
+    const SETTINGS_KEY = 'dsh.taskDeck.settings.v1';
+    const AUTO_DONE_OPTIONS = [0, 7, 14, 30];
+    const DEFAULT_AUTO_DONE_DAYS = 14;
     const EMPTY_LIST = Object.freeze({
       ids: [],
       byId: {},
@@ -520,6 +543,27 @@ window.__ModuleLoader__.load({
       }
     }
 
+    function loadSettings() {
+      try {
+        const raw = window.localStorage.getItem(SETTINGS_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        const days = parsed && Number(parsed.autoDoneDays);
+        return {
+          autoDoneDays: AUTO_DONE_OPTIONS.includes(days) ? days : DEFAULT_AUTO_DONE_DAYS,
+        };
+      } catch (error) {
+        return { autoDoneDays: DEFAULT_AUTO_DONE_DAYS };
+      }
+    }
+
+    function saveSettings(settings) {
+      try {
+        window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+      } catch (error) {
+        /* Preferences remain usable in memory when storage is unavailable. */
+      }
+    }
+
     function relativeTime(timestamp, t) {
       if (!Number.isFinite(timestamp) || timestamp <= 0) return t('time.unknown');
       const difference = Math.max(0, Date.now() - timestamp);
@@ -543,7 +587,7 @@ window.__ModuleLoader__.load({
       return t('session.nextContinue');
     }
 
-    function buildTasks(listSnapshot, annotations, t) {
+    function buildTasks(listSnapshot, annotations, settings, t, now) {
       const list = listSnapshot || EMPTY_LIST;
       const ids = Array.isArray(list.ids) ? list.ids : [];
       const byId = list.byId || {};
@@ -565,7 +609,14 @@ window.__ModuleLoader__.load({
           && STATUS_ORDER.includes(annotation.status)
           ? annotation.status
           : null;
-        const status = summary.running ? 'active' : (manualStatus || 'waiting');
+        const lastActivity = summary.updatedAt || 0;
+        const idleMs = lastActivity > 0 ? Math.max(0, now - lastActivity) : 0;
+        const autoDone = !summary.running
+          && !manualStatus
+          && settings.autoDoneDays > 0
+          && lastActivity > 0
+          && idleMs >= settings.autoDoneDays * 86_400_000;
+        const status = summary.running ? 'active' : (manualStatus || (autoDone ? 'done' : 'waiting'));
         const parentId = summary.parentId || null;
         const forks = [];
         tasks.push({
@@ -583,6 +634,9 @@ window.__ModuleLoader__.load({
           due: '—',
           updated: relativeTime(summary.updatedAt, t),
           updatedAt: summary.updatedAt || 0,
+          autoDone,
+          idleDays: Math.floor(idleMs / 86_400_000),
+          manualStatus,
           owner: t('common.you'),
           tags: annotation.tags || (parentId ? ['fork'] : []),
           parentId,
@@ -646,6 +700,7 @@ window.__ModuleLoader__.load({
         ? sessionList.getSnapshot()
         : EMPTY_LIST;
       let annotations = loadAnnotations();
+      let settings = loadSettings();
       let view = 'dashboard';
       let activeTaskId = null;
       let sessionTaskId = null;
@@ -661,7 +716,7 @@ window.__ModuleLoader__.load({
         : () => {};
 
       function rebuild() {
-        const tasks = buildTasks(listSnapshot, annotations, t);
+        const tasks = buildTasks(listSnapshot, annotations, settings, t, Date.now());
         const has = (id) => tasks.some((task) => task.id === id);
         if (!has(sessionTaskId)) {
           const running = tasks.find((task) => task.running);
@@ -676,6 +731,7 @@ window.__ModuleLoader__.load({
           tasks,
           phase: listSnapshot.phase || 'pending',
           annotations,
+          autoDoneDays: settings.autoDoneDays,
         };
         return cached;
       }
@@ -718,6 +774,15 @@ window.__ModuleLoader__.load({
         localeChanged() {
           notify();
         },
+        setAutoDoneDays(days) {
+          const value = Number(days);
+          settings = {
+            ...settings,
+            autoDoneDays: AUTO_DONE_OPTIONS.includes(value) ? value : DEFAULT_AUTO_DONE_DAYS,
+          };
+          saveSettings(settings);
+          notify();
+        },
         openTask(taskId) {
           if (!cached.tasks.some((task) => task.id === taskId)) return;
           view = 'detail';
@@ -748,6 +813,13 @@ window.__ModuleLoader__.load({
               ...((annotations[taskId] && annotations[taskId].activity) || []),
             ],
           });
+        },
+        clearStatus(taskId) {
+          const existing = annotations[taskId];
+          if (!existing) return;
+          const next = { ...existing };
+          delete next.status;
+          persistAnnotations({ ...annotations, [taskId]: next });
         },
         addCheck(taskId, text) {
           const value = String(text || '').trim();
@@ -1234,7 +1306,7 @@ window.__ModuleLoader__.load({
           tasks: visible.filter((item) => item.status === status),
         }))
         .filter((group) => group.tasks.length > 0)
-        .filter((group) => tab !== 'overview' || filter !== 'all' || group.status !== 'done' || onlyDone);
+        .filter((group) => tab !== 'overview' || filter !== 'all' || group.status !== 'done' || onlyDone || normalized);
 
       if (state.view === 'detail' && task) {
         return h(
@@ -1576,6 +1648,30 @@ window.__ModuleLoader__.load({
                     h('span', null, t('dashboard.workspaces')),
                     h('strong', null, new Set(state.tasks.map((item) => item.workspace)).size),
                   ),
+                  h(
+                    'div',
+                    { className: 'td-auto-control' },
+                    h(
+                      'div',
+                      { className: 'td-auto-row' },
+                      h('span', { className: 'td-auto-label' }, t('auto.title')),
+                      h(
+                        'select',
+                        {
+                          className: 'td-auto-select',
+                          value: state.autoDoneDays,
+                          'aria-label': t('auto.title'),
+                          onChange: (event) => store.setAutoDoneDays(Number(event.target.value)),
+                        },
+                        AUTO_DONE_OPTIONS.map((days) => h(
+                          'option',
+                          { key: days, value: days },
+                          days === 0 ? t('auto.never') : fmt(t('auto.days'), { n: days }),
+                        )),
+                      ),
+                    ),
+                    h('p', { className: 'td-rail-hint', style: { margin: '5px 0 0' } }, t('auto.hint')),
+                  ),
                 ),
               ),
             ),
@@ -1689,6 +1785,24 @@ window.__ModuleLoader__.load({
             h('span', null, h(Icon, { name: 'branch', size: 13 }), task.branch),
             h('span', null, h(Icon, { name: 'message', size: 13 }), (task.sessions || []).length),
           ),
+          task.autoDone ? h(
+            'div',
+            { className: 'td-auto-note' },
+            h(Icon, { name: 'clock', size: 13 }),
+            h('span', null, fmt(t('auto.doneLabel'), { days: state.autoDoneDays })),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'td-btn td-btn-secondary td-btn-sm',
+                onClick: () => {
+                  store.setStatus(task.id, 'waiting', t('status.waiting'));
+                  flash(t('toast.statusUpdated'));
+                },
+              },
+              t('auto.reopen'),
+            ),
+          ) : null,
         ),
         h(
           'div',
@@ -1991,15 +2105,22 @@ window.__ModuleLoader__.load({
                   'select',
                   {
                     className: 'td-status-select',
-                    value: task.status,
+                    value: task.manualStatus || 'auto',
                     disabled: task.running,
                     title: task.running ? t('detail.running') : t('detail.status'),
                     'aria-label': t('detail.status'),
                     onChange: (event) => {
-                      store.setStatus(task.id, event.target.value, t(STATUS_KEY[event.target.value]));
-                      flash(event.target.value === 'review' ? t('toast.reviewMoved') : t('toast.statusUpdated'));
+                      const value = event.target.value;
+                      if (value === 'auto') {
+                        store.clearStatus(task.id);
+                        flash(t('toast.statusUpdated'));
+                        return;
+                      }
+                      store.setStatus(task.id, value, t(STATUS_KEY[value]));
+                      flash(value === 'review' ? t('toast.reviewMoved') : t('toast.statusUpdated'));
                     },
                   },
+                  h('option', { value: 'auto' }, t('auto.statusAuto')),
                   STATUS_ORDER.filter((status) => status !== 'active').map((status) => h('option', { key: status, value: status }, t(STATUS_KEY[status]))),
                 ),
               ),
@@ -2462,6 +2583,23 @@ window.__ModuleLoader__.load({
             h(PriorityChip, { priority: task.priority }),
             h('span', { className: 'td-branch-chip', title: task.branch }, h(Icon, { name: 'branch', size: 11 }), h('span', null, task.branch)),
           ),
+          task.autoDone ? h(
+            'div',
+            { className: 'td-thread-auto' },
+            h(Icon, { name: 'clock', size: 12 }),
+            h('span', null, fmt(t('auto.doneLabel'), { days: state.autoDoneDays })),
+            h(
+              'button',
+              {
+                type: 'button',
+                onClick: () => {
+                  store.setStatus(task.id, 'waiting', t('status.waiting'));
+                  flash(t('toast.statusUpdated'));
+                },
+              },
+              t('auto.reopen'),
+            ),
+          ) : null,
           h(
             'div',
             { className: 'td-thread-live' },
@@ -2854,6 +2992,16 @@ window.__ModuleLoader__.load({
       .td-session-fact { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 27px; border-top: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); font-size: 10.5px; }
       .td-session-fact:first-of-type { border-top: 0; }
       .td-session-fact strong { color: var(--dsw-alias-label-primary); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+      .td-auto-control { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--dsw-alias-border-l1); }
+      .td-auto-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .td-auto-label { color: var(--dsw-alias-label-primary); font-size: 10.5px; font-weight: 560; }
+      .td-auto-select { height: 24px; padding: 0 5px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; outline: 0; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-secondary); font: inherit; font-size: 10px; }
+      .td-auto-select:focus { border-color: var(--dsw-alias-brand-primary); }
+      .td-auto-note { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 13px; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--dsw-alias-state-idle-primary) 24%, var(--dsw-alias-border-l1)); border-radius: 8px; background: color-mix(in srgb, var(--dsw-alias-state-idle-primary) 5%, transparent); color: var(--dsw-alias-label-secondary); font-size: 10.5px; line-height: 1.5; }
+      .td-auto-note > span { flex: 1; min-width: 180px; }
+      .td-thread-auto { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); font-size: 9.5px; line-height: 1.45; }
+      .td-thread-auto > span { flex: 1; min-width: 140px; }
+      .td-thread-auto button { padding: 0; border: 0; background: transparent; color: var(--dsw-alias-brand-primary); font-size: 9.5px; font-weight: 600; cursor: pointer; }
       .td-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 220px; padding: 28px; text-align: center; }
       .td-empty-icon { display: grid; place-items: center; width: 36px; height: 36px; margin-bottom: 10px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); }
       .td-empty-title { font-size: 12.5px; font-weight: 600; }

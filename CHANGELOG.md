@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.2
+
+- Added idle auto-complete: non-running sessions with no manual status become Done after 7/14/30 days (default 14).
+- Added an Auto-complete setting in the Dashboard catalog card.
+- Auto-done is derived from the last activity timestamp, so new activity revives the session automatically.
+- Manual Waiting keeps a session open; the new Auto status option clears the manual override.
+- Added auto-done notices and a Reopen as Waiting action in Task Detail and Task Thread.
+- Auto-done sessions are searchable and listed under the Done filter.
+
 ## 1.1.1
 
 - Made `Active` a live runtime fact derived only from `summary.running`.
