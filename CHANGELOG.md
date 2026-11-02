@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.5
+
+- Fixed the conversation-header Task Deck icon disappearing: the launcher no longer hides behind the optional right-sidebar services, and the right-pane tab type retries for 20s instead of being skipped when `sidebarRightTabs` mounts after this plugin.
+- Fixed the list losing the conversation title (rows fell back to the raw `session-…` id): titles now read the `title` projection cell, request `refreshProjections` for sessions whose title has not loaded, and show a short `#key` instead of the full id.
+- Rows show `Reading title…` while a title is still loading, and the workspace path in the title tooltip.
+
 ## 1.1.4
 
 - Expanded idle auto-complete thresholds to hour-level options: 1h, 3h, 6h, 12h, 1d, 3d, 7d, 14d, 30d, Never.

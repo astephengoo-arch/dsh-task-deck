@@ -197,6 +197,7 @@ window.__ModuleLoader__.load({
       'auto.doneShort': 'Auto-done',
       'auto.statusAuto': 'Auto (from activity)',
       'session.untitled': 'Untitled conversation',
+      'session.titleLoading': 'Reading title…',
       'session.noWorkspace': 'No workspace',
       'session.conversation': 'Conversation',
       'session.nextBlank': 'Start this conversation with a concrete request',
@@ -424,6 +425,7 @@ window.__ModuleLoader__.load({
       'auto.doneShort': '自动完成',
       'auto.statusAuto': '自动（按活动判断）',
       'session.untitled': '未命名会话',
+      'session.titleLoading': '标题读取中…',
       'session.noWorkspace': '未绑定工作区',
       'session.conversation': '会话',
       'session.nextBlank': '用一个具体请求开始这段对话',
@@ -514,6 +516,12 @@ window.__ModuleLoader__.load({
       const text = String(value).replace(/[\\/]+$/, '');
       const parts = text.split(/[\\/]/);
       return parts[parts.length - 1] || text;
+    }
+
+    // A full session id swamps a 300px row; the tail is what stays unique and readable.
+    function shortSessionKey(id) {
+      const raw = String(id || '').replace(/^session-/, '');
+      return raw.length > 8 ? raw.slice(-8) : raw;
     }
 
     function loadAnnotations() {
@@ -609,6 +617,7 @@ window.__ModuleLoader__.load({
       const list = listSnapshot || EMPTY_LIST;
       const ids = Array.isArray(list.ids) ? list.ids : [];
       const byId = list.byId || {};
+      const projections = list.projectionsBySession || {};
       const tasks = [];
 
       for (const id of ids) {
@@ -616,7 +625,23 @@ window.__ModuleLoader__.load({
         if (!summary || summary.origin === 'subagent') continue;
         const annotation = annotations[id] || {};
         const workspace = pathBase(summary.cwd);
-        const realTitle = summary.displayTitle || summary.title || t('session.untitled');
+        // A row's `displayTitle` degrades to the raw id (or the cwd basename) while the durable
+        // title projection has not landed, so read the projection cell first and only accept
+        // the row title when it actually says something about this conversation.
+        const projection = projections[id];
+        const projected = (projection && projection.values ? projection.values.title : null)
+          || (summary.projectionValues ? summary.projectionValues.title : null);
+        const projectedTitle = typeof projected === 'string' ? projected.trim() : '';
+        const rowTitle = typeof summary.title === 'string' ? summary.title.trim() : '';
+        const displayTitle = typeof summary.displayTitle === 'string' ? summary.displayTitle.trim() : '';
+        const placeholder = !displayTitle
+          || displayTitle === id
+          || displayTitle === `session/${id}`
+          || displayTitle === id.replace(/^session-/, '')
+          || (workspace && displayTitle === workspace);
+        const realTitle = projectedTitle || rowTitle || (placeholder ? '' : displayTitle)
+          || `${t('session.untitled')}${workspace ? ` · ${workspace}` : ''}`;
+        const titleKnown = !!(projectedTitle || rowTitle || (placeholder ? '' : displayTitle));
         const title = annotation.alias || (
           summary.blank
             ? `${t('session.blank')}${workspace ? ` · ${workspace}` : ''}`
@@ -642,6 +667,8 @@ window.__ModuleLoader__.load({
           sessionId: id,
           title,
           realTitle,
+          titleKnown,
+          alias: annotation.alias || '',
           project: 'DSH',
           status,
           priority: annotation.priority || 'P2',
@@ -724,7 +751,42 @@ window.__ModuleLoader__.load({
       let sessionTaskId = null;
       let cached = null;
       let disposed = false;
+      let titleTimer = 0;
+      const titleRequests = new Set();
+      const titleQueue = [];
       const listeners = new Set();
+
+      // Rows only carry the durable title once its projection has been read from the Host.
+      // Ask for the missing ones (once per session) so the list stops showing raw ids.
+      function scheduleTitleRefresh(tasks) {
+        if (!services.sessions || typeof services.sessions.refreshProjections !== 'function') return;
+        for (const task of tasks) {
+          if (task.titleKnown || task.blank || titleRequests.has(task.sessionId)) continue;
+          titleRequests.add(task.sessionId);
+          titleQueue.push(task.sessionId);
+        }
+        if (!titleQueue.length || titleTimer) return;
+        titleTimer = window.setTimeout(() => {
+          titleTimer = 0;
+          const batch = titleQueue.splice(0, titleQueue.length);
+          let index = 0;
+          // Stagger the projection reads: a workspace can hold dozens of unopened sessions.
+          function step() {
+            if (disposed) return;
+            const id = batch[index];
+            index += 1;
+            if (!id) return;
+            try {
+              const request = services.sessions.refreshProjections(id);
+              if (request && typeof request.catch === 'function') request.catch(() => titleRequests.delete(id));
+            } catch (error) {
+              titleRequests.delete(id);
+            }
+            if (index < batch.length) window.setTimeout(step, 90);
+          }
+          step();
+        }, 300);
+      }
 
       const unsubscribe = sessionList && typeof sessionList.subscribe === 'function'
         ? sessionList.subscribe(() => {
@@ -751,6 +813,7 @@ window.__ModuleLoader__.load({
           annotations,
           autoDoneHours: settings.autoDoneHours,
         };
+        scheduleTitleRefresh(tasks);
         return cached;
       }
 
@@ -788,6 +851,9 @@ window.__ModuleLoader__.load({
           disposed = true;
           unsubscribe();
           listeners.clear();
+          if (titleTimer) window.clearTimeout(titleTimer);
+          titleTimer = 0;
+          titleQueue.length = 0;
         },
         localeChanged() {
           notify();
@@ -1134,8 +1200,11 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'td-row-top' },
             h('span', { className: 'td-row-dot', style: statusStyle(task.status) }),
-            h('span', { className: 'td-key' }, task.id),
-            h('span', { className: 'td-task-title' }, task.title),
+            h('span', { className: 'td-key', title: task.id }, `#${shortSessionKey(task.id)}`),
+            h('span', { className: 'td-task-title', title: `${task.title}\n${task.workspacePath || task.workspace}` }, task.title),
+            task.titleKnown || task.blank || task.alias
+              ? null
+              : h('span', { className: 'td-title-pending' }, t('session.titleLoading')),
             h(PriorityChip, { priority: task.priority }),
           ),
           h(
@@ -2762,9 +2831,20 @@ window.__ModuleLoader__.load({
         store.setSessionTask(task.id);
         try {
           const rightbar = ctx.get('sidebarRight');
-          if (rightbar) rightbar.openTab(TAB_KIND);
+          if (rightbar && typeof rightbar.openTab === 'function') {
+            rightbar.openTab(TAB_KIND);
+            return;
+          }
         } catch (error) {
-          /* The tab type is registered only when the right sidebar is available. */
+          /* fall through to the Task Deck panel below */
+        }
+        // No right sidebar in this build: land on the task so its thread actions stay reachable.
+        try {
+          store.openTask(task.id);
+          const layout = ctx.get('layout');
+          if (layout && typeof layout.selectPanel === 'function') layout.selectPanel(PANEL_ID);
+        } catch (error) {
+          /* the panel may not be selectable yet */
         }
       }
       return h(
@@ -2952,6 +3032,8 @@ window.__ModuleLoader__.load({
       .td-row-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--td-status); box-shadow: 0 0 0 3px color-mix(in srgb, var(--td-status) 12%, transparent); }
       .td-key { color: var(--dsw-alias-label-secondary); font-size: 10.5px; font-variant-numeric: tabular-nums; letter-spacing: .015em; flex: none; }
       .td-task-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.8px; font-weight: 560; letter-spacing: -.005em; }
+      .td-title-pending { flex: none; color: var(--dsw-alias-label-secondary); opacity: .75; font-size: 10px; font-weight: 500; animation: td-pulse 1.6s ease-in-out infinite; }
+      @keyframes td-pulse { 0%, 100% { opacity: .45; } 50% { opacity: .95; } }
       .td-priority {
         display: inline-grid; place-items: center; height: 17px; min-width: 25px; padding: 0 5px;
         border-radius: 4px; flex: none; background: color-mix(in srgb, var(--td-priority) 12%, transparent);
@@ -3399,28 +3481,65 @@ window.__ModuleLoader__.load({
           key: PANEL_ID,
         }, DashboardBound));
 
-        const tabs = ctx.get('sidebarRightTabs');
-        const rightbar = ctx.get('sidebarRight');
-        if (tabs && rightbar) {
-          ctx.effect(() => tabs.register({
-            id: PACKAGE,
-            kind: TAB_KIND,
-            title: () => t('thread.tabTitle'),
-            keepMounted: true,
-          }));
+        // The conversation-header launcher must never depend on the right sidebar being
+        // installed or already mounted: it is the only way into the Thread panel.
+        ctx.effect(() => ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+          name: 'conversation.session.header.utilities',
+          id: 'task-deck-thread',
+          order: -2,
+          label: () => t('thread.title'),
+        }, ThreadLauncherBound)));
 
-          ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
-            name: 'sidebar.right.pane.tab',
-            key: PACKAGE,
-          }, ThreadBound)));
+        // The pane body stands on its own too; only the tab TYPE needs the tab registry.
+        ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+          name: 'sidebar.right.pane.tab',
+          key: PACKAGE,
+        }, ThreadBound)));
 
-          ctx.effect(() => ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
-            name: 'conversation.session.header.utilities',
-            id: 'task-deck-thread',
-            order: -2,
-            label: () => t('thread.title'),
-          }, ThreadLauncherBound)));
-        }
+        // `sidebarRightTabs` is provided by the right-sidebar plugin, which may mount after
+        // this one. Poll briefly instead of skipping the tab type for the whole session.
+        ctx.effect(() => {
+          let disposeType = null;
+          let stopped = false;
+          let timer = 0;
+          function disposeRegistered() {
+            if (!disposeType) return;
+            const dispose = disposeType;
+            disposeType = null;
+            try {
+              dispose();
+            } catch (error) {
+              /* a failing disposer must not break unload */
+            }
+          }
+          function attempt() {
+            if (stopped || disposeType) return true;
+            const tabs = ctx.get('sidebarRightTabs');
+            if (!tabs || typeof tabs.register !== 'function') return false;
+            try {
+              disposeType = tabs.register({
+                id: PACKAGE,
+                kind: TAB_KIND,
+                title: () => t('thread.tabTitle'),
+                keepMounted: true,
+              });
+            } catch (error) {
+              disposeType = null;
+            }
+            return !!disposeType;
+          }
+          if (attempt() || typeof window.setInterval !== 'function') return disposeRegistered;
+          timer = window.setInterval(() => {
+            if (attempt()) window.clearInterval(timer);
+          }, 1000);
+          const giveUp = window.setTimeout(() => window.clearInterval(timer), 20000);
+          return () => {
+            stopped = true;
+            window.clearInterval(timer);
+            window.clearTimeout(giveUp);
+            disposeRegistered();
+          };
+        });
       },
     };
   },
