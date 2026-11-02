@@ -75,6 +75,9 @@ Design notes: [docs/DESIGN.md](docs/DESIGN.md). Publishing notes: [docs/PUBLISHI
 - Stores only personal annotations in browser `localStorage`.
 - No transcript upload, no analytics, no external network calls.
 
+<img width="3380" height="1840" alt="image" src="https://github.com/user-attachments/assets/6da077ea-be71-4d16-a081-751ab2a6e25a" />
+
+
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/astephengoo-arch/dsh-task-deck)
 
 
