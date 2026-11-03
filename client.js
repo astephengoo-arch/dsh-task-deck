@@ -23,6 +23,43 @@ window.__ModuleLoader__.load({
       'dashboard.overview': 'Overview',
       'dashboard.all': 'All tasks',
       'dashboard.reviewQueue': 'Review queue',
+      'dashboard.insights': 'Stats',
+      'insights.rangeAll': 'All time',
+      'insights.range7': 'Last 7 days',
+      'insights.range30': 'Last 30 days',
+      'insights.refresh': 'Recalculate',
+      'insights.refreshing': 'Calculating…',
+      'insights.updatedAt': 'Updated {time}',
+      'insights.error': 'Work-time stats are unavailable. Install the updated plugin on a host running the web server, then reload.',
+      'insights.sessions': 'Conversations',
+      'insights.runningHint': '{n} running now',
+      'insights.totalTokens': 'Total tokens',
+      'insights.measuredHint': '{n} measured',
+      'insights.totalWork': 'Work time',
+      'insights.workHint': 'Model and tool turns only',
+      'insights.totalTurns': 'Turns',
+      'insights.avgTurn': '{value} per turn',
+      'insights.noData': 'No data yet',
+      'insights.composition': 'Token composition',
+      'insights.compositionHint': 'Cache reads dominate long conversations; output is what the model wrote.',
+      'insights.cacheRead': 'Cache read',
+      'insights.input': 'Input',
+      'insights.output': 'Output',
+      'insights.cacheWrite': 'Cache write',
+      'insights.byTask': 'By conversation',
+      'insights.sortTokens': 'Tokens',
+      'insights.sortWork': 'Work time',
+      'insights.sortTurns': 'Turns',
+      'insights.sortRecent': 'Recent',
+      'insights.colTask': 'Conversation',
+      'insights.colTurns': 'Turns',
+      'insights.colWork': 'Work',
+      'insights.colSpan': 'Span',
+      'insights.colTokens': 'Tokens',
+      'insights.empty': 'No conversations in this range.',
+      'insights.loading': 'Reading…',
+      'insights.partial': '{n} conversation(s) could not be measured yet.',
+      'insights.workspaces': 'By workspace',
       'dashboard.filterAll': 'All',
       'dashboard.sortUpdated': 'Updated recently',
       'dashboard.search': 'Search tasks, branches, sessions…',
@@ -79,6 +116,9 @@ window.__ModuleLoader__.load({
       'detail.tags': 'Tags',
       'detail.parent': 'Parent task',
       'detail.children': 'Branches',
+      'detail.workTime': 'Work time',
+      'detail.tokenUsage': 'Tokens',
+      'detail.turns': 'Turns',
       'detail.none': 'None',
       'detail.progress': 'Complete',
       'detail.reviewGate': 'Review gate',
@@ -251,6 +291,43 @@ window.__ModuleLoader__.load({
       'dashboard.overview': '总览',
       'dashboard.all': '全部任务',
       'dashboard.reviewQueue': '评审队列',
+      'dashboard.insights': '统计',
+      'insights.rangeAll': '全部',
+      'insights.range7': '近 7 天',
+      'insights.range30': '近 30 天',
+      'insights.refresh': '重新计算',
+      'insights.refreshing': '计算中…',
+      'insights.updatedAt': '更新于 {time}',
+      'insights.error': '耗时统计暂不可用。请在运行 Web 服务的主机上更新插件后重新加载。',
+      'insights.sessions': '会话数',
+      'insights.runningHint': '{n} 个正在运行',
+      'insights.totalTokens': 'Token 总量',
+      'insights.measuredHint': '{n} 个已统计',
+      'insights.totalWork': '总耗时',
+      'insights.workHint': '仅模型与工具轮次',
+      'insights.totalTurns': '总轮数',
+      'insights.avgTurn': '平均每轮 {value}',
+      'insights.noData': '暂无数据',
+      'insights.composition': 'Token 构成',
+      'insights.compositionHint': '长对话以缓存读取为主，输出才是模型真正写出的内容。',
+      'insights.cacheRead': '缓存读取',
+      'insights.input': '输入',
+      'insights.output': '输出',
+      'insights.cacheWrite': '缓存写入',
+      'insights.byTask': '各会话明细',
+      'insights.sortTokens': 'Token',
+      'insights.sortWork': '耗时',
+      'insights.sortTurns': '轮数',
+      'insights.sortRecent': '最近',
+      'insights.colTask': '会话',
+      'insights.colTurns': '轮数',
+      'insights.colWork': '耗时',
+      'insights.colSpan': '跨度',
+      'insights.colTokens': 'Token',
+      'insights.empty': '这个时间范围内没有会话。',
+      'insights.loading': '读取中…',
+      'insights.partial': '还有 {n} 个会话未能计算。',
+      'insights.workspaces': '按工作区',
       'dashboard.filterAll': '全部',
       'dashboard.sortUpdated': '最近更新',
       'dashboard.search': '搜索任务、分支或会话…',
@@ -307,6 +384,9 @@ window.__ModuleLoader__.load({
       'detail.tags': '标签',
       'detail.parent': '上级任务',
       'detail.children': '分支',
+      'detail.workTime': '耗时',
+      'detail.tokenUsage': 'Token',
+      'detail.turns': '轮数',
       'detail.none': '无',
       'detail.progress': '完成度',
       'detail.reviewGate': '评审门禁',
@@ -502,6 +582,10 @@ window.__ModuleLoader__.load({
 
     const ANNOTATION_KEY = 'dsh.taskDeck.annotations.v1';
     const SETTINGS_KEY = 'dsh.taskDeck.settings.v1';
+    const STATS_KEY = 'dsh.taskDeck.stats.v1';
+    const STATS_PATH = '/task-deck/stats';
+    const STATS_BATCH = 8;
+    const STATS_CACHE_LIMIT = 200;
     const AUTO_DONE_HOURS_OPTIONS = [0, 1, 3, 6, 12, 24, 72, 168, 336, 720];
     const DEFAULT_AUTO_DONE_HOURS = 336;
     const EMPTY_LIST = Object.freeze({
@@ -522,6 +606,82 @@ window.__ModuleLoader__.load({
     function shortSessionKey(id) {
       const raw = String(id || '').replace(/^session-/, '');
       return raw.length > 8 ? raw.slice(-8) : raw;
+    }
+
+    function tokenNumber(value) {
+      return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+    }
+
+    // The wire projection names the uncached prompt bucket `uncachedInputTokens`; keep one
+    // client shape so the list, the insights table and the detail row all agree.
+    function normalizeTokens(usage) {
+      const input = tokenNumber(usage && (usage.uncachedInputTokens ?? usage.inputTokens));
+      const output = tokenNumber(usage && usage.outputTokens);
+      const cacheRead = tokenNumber(usage && usage.cacheReadTokens);
+      const cacheWrite = tokenNumber(usage && usage.cacheWriteTokens);
+      return {
+        input,
+        output,
+        cacheRead,
+        cacheWrite,
+        total: input + output + cacheRead + cacheWrite,
+      };
+    }
+
+    function formatTokens(value) {
+      const n = tokenNumber(value);
+      if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+      if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`;
+      return String(Math.round(n));
+    }
+
+    // Durations stay at two units at most: "3s", "4m 12s", "2h 5m", "3d 4h".
+    function formatDuration(ms) {
+      const value = Math.max(0, Number(ms) || 0);
+      if (value < 1000) return `${Math.round(value)}ms`;
+      const seconds = Math.round(value / 1000);
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      const restSeconds = seconds % 60;
+      if (minutes < 60) return restSeconds ? `${minutes}m ${restSeconds}s` : `${minutes}m`;
+      const hours = Math.floor(minutes / 60);
+      const restMinutes = minutes % 60;
+      if (hours < 24) return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
+      const days = Math.floor(hours / 24);
+      const restHours = hours % 24;
+      return restHours ? `${days}d ${restHours}h` : `${days}d`;
+    }
+
+    function loadStatsCache() {
+      try {
+        const raw = window.localStorage.getItem(STATS_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (!parsed || typeof parsed !== 'object' || !parsed.byId) return {};
+        const out = {};
+        for (const [id, value] of Object.entries(parsed.byId)) {
+          if (!value || typeof value !== 'object') continue;
+          if (!Number.isFinite(value.workMs) && !Number.isFinite(value.tokens?.total)) continue;
+          out[id] = value;
+        }
+        return out;
+      } catch (error) {
+        return {};
+      }
+    }
+
+    function saveStatsCache(byId) {
+      try {
+        const entries = Object.entries(byId)
+          .filter(([, value]) => value && typeof value === 'object')
+          .sort((a, b) => (b[1].computedAt || 0) - (a[1].computedAt || 0))
+          .slice(0, STATS_CACHE_LIMIT);
+        window.localStorage.setItem(STATS_KEY, JSON.stringify({
+          v: 1,
+          byId: Object.fromEntries(entries),
+        }));
+      } catch (error) {
+        /* A full or disabled storage must not break the page. */
+      }
     }
 
     function loadAnnotations() {
@@ -698,6 +858,10 @@ window.__ModuleLoader__.load({
           origin: summary.origin || '',
           cwd: summary.cwd || '',
           retainedBy: summary.retainedBy || {},
+          tokens: normalizeTokens(
+            (projection && projection.values ? projection.values.tokenUsage : null)
+            || (summary.projectionValues ? summary.projectionValues.tokenUsage : null),
+          ),
           annotation,
           forks,
         });
@@ -755,6 +919,11 @@ window.__ModuleLoader__.load({
       const titleRequests = new Set();
       const titleQueue = [];
       const listeners = new Set();
+      let statsById = loadStatsCache();
+      let statsStatus = 'idle';
+      let statsError = '';
+      let statsInflight = null;
+      let statsPoll = 0;
 
       // Rows only carry the durable title once its projection has been read from the Host.
       // Ask for the missing ones (once per session) so the list stops showing raw ids.
@@ -795,6 +964,71 @@ window.__ModuleLoader__.load({
         })
         : () => {};
 
+      // Work time only exists on the Host (durable header + turn boundaries), so this half
+      // batches ids over the same-origin route and keeps the last answer for an instant paint.
+      function mergeStats(records) {
+        if (!records.length) return;
+        const next = { ...statsById };
+        for (const record of records) {
+          if (!record || typeof record.id !== 'string') continue;
+          next[record.id] = record;
+        }
+        statsById = next;
+        saveStatsCache(statsById);
+      }
+
+      function requestStats(ids, fresh) {
+        let chain = Promise.resolve([]);
+        const collected = [];
+        for (let index = 0; index < ids.length; index += STATS_BATCH) {
+          const chunk = ids.slice(index, index + STATS_BATCH);
+          chain = chain.then(() => {
+            if (disposed) return undefined;
+            const url = `${STATS_PATH}?ids=${encodeURIComponent(chunk.join(','))}${fresh ? '&fresh=1' : ''}`;
+            return window.fetch(url, { headers: { accept: 'application/json' } })
+              .then((response) => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.json();
+              })
+              .then((body) => {
+                if (!body || body.ok !== true) throw new Error('bad payload');
+                for (const record of body.sessions || []) collected.push(record);
+              });
+          });
+        }
+        return chain.then(() => collected);
+      }
+
+      function loadStats(options) {
+        const opts = options || {};
+        if (disposed) return Promise.resolve();
+        if (statsInflight) return statsInflight;
+        const ids = (cached ? cached.tasks : []).map((task) => task.id).filter(Boolean);
+        if (!ids.length) {
+          statsStatus = 'ready';
+          return Promise.resolve();
+        }
+        statsStatus = 'loading';
+        statsError = '';
+        notify();
+        const run = requestStats(ids, !!opts.fresh)
+          .then((records) => {
+            const stamped = records.map((record) => ({ ...record, computedAt: Date.now() }));
+            mergeStats(stamped);
+            statsStatus = 'ready';
+          })
+          .catch((error) => {
+            statsStatus = 'error';
+            statsError = String((error && error.message) || error || '');
+          })
+          .then(() => {
+            statsInflight = null;
+            notify();
+          });
+        statsInflight = run;
+        return run;
+      }
+
       function rebuild() {
         const tasks = buildTasks(listSnapshot, annotations, settings, t, Date.now());
         const has = (id) => tasks.some((task) => task.id === id);
@@ -812,6 +1046,7 @@ window.__ModuleLoader__.load({
           phase: listSnapshot.phase || 'pending',
           annotations,
           autoDoneHours: settings.autoDoneHours,
+          stats: { byId: statsById, status: statsStatus, error: statsError },
         };
         scheduleTitleRefresh(tasks);
         return cached;
@@ -854,9 +1089,21 @@ window.__ModuleLoader__.load({
           if (titleTimer) window.clearTimeout(titleTimer);
           titleTimer = 0;
           titleQueue.length = 0;
+          statsInflight = null;
         },
         localeChanged() {
           notify();
+        },
+        loadStats(options) {
+          return loadStats(options);
+        },
+        refreshStats() {
+          return loadStats({ fresh: true });
+        },
+        openInsights() {
+          view = 'insights';
+          notify();
+          return loadStats();
         },
         setAutoDoneHours(hours) {
           const value = Number(hours);
@@ -1306,6 +1553,271 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function TokenBar(props) {
+      const tokens = props.tokens || {};
+      const total = tokens.total || 0;
+      const segments = [
+        ['cacheRead', tokens.cacheRead, 'is-read'],
+        ['input', tokens.input, 'is-input'],
+        ['output', tokens.output, 'is-output'],
+        ['cacheWrite', tokens.cacheWrite, 'is-write'],
+      ];
+      if (!total) return h('div', { className: 'td-ins-bar is-empty', 'aria-hidden': true });
+      return h(
+        'div',
+        { className: 'td-ins-bar', title: props.title || '' },
+        segments.map(([key, value, cls]) => (value > 0
+          ? h('span', {
+            key,
+            className: `td-ins-seg ${cls}`,
+            style: { width: `${Math.max(1.5, (value / total) * 100)}%` },
+          })
+          : null)),
+      );
+    }
+
+    function InsightsBody(props) {
+      const t = props.t;
+      const state = props.state;
+      const store = props.store;
+      const [sort, setSort] = React.useState('tokens');
+      const [range, setRange] = React.useState('all');
+      const [busy, setBusy] = React.useState(false);
+
+      React.useEffect(() => {
+        store.loadStats();
+        const timer = window.setInterval(() => {
+          const tasks = store.getState().tasks;
+          if (tasks.some((task) => task.running)) store.loadStats();
+        }, 30_000);
+        return () => window.clearInterval(timer);
+      }, [store]);
+
+      const now = Date.now();
+      const rangeMs = range === 'all' ? 0 : Number(range) * 86_400_000;
+      const rows = state.tasks
+        .filter((task) => !rangeMs || (task.updatedAt > 0 && now - task.updatedAt <= rangeMs))
+        .map((task) => ({ task, stat: state.stats.byId[task.id] || null }));
+
+      const totals = rows.reduce((acc, row) => {
+        acc.tokens += row.stat ? row.stat.tokens.total : 0;
+        acc.work += row.stat ? row.stat.workMs : 0;
+        acc.turns += row.stat ? row.stat.turns : 0;
+        if (row.task.running) acc.running += 1;
+        if (row.stat) acc.measured += 1;
+        return acc;
+      }, { tokens: 0, work: 0, turns: 0, running: 0, measured: 0 });
+
+      const sorted = rows.slice().sort((a, b) => {
+        if (sort === 'work') return (b.stat ? b.stat.workMs : -1) - (a.stat ? a.stat.workMs : -1);
+        if (sort === 'turns') return (b.stat ? b.stat.turns : -1) - (a.stat ? a.stat.turns : -1);
+        if (sort === 'recent') return b.task.updatedAt - a.task.updatedAt;
+        return (b.stat ? b.stat.tokens.total : -1) - (a.stat ? a.stat.tokens.total : -1);
+      });
+
+      const composition = rows.reduce((acc, row) => {
+        if (!row.stat) return acc;
+        acc.input += row.stat.tokens.input;
+        acc.output += row.stat.tokens.output;
+        acc.cacheRead += row.stat.tokens.cacheRead;
+        acc.cacheWrite += row.stat.tokens.cacheWrite;
+        acc.total += row.stat.tokens.total;
+        return acc;
+      }, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
+
+      const byWorkspace = new Map();
+      for (const row of rows) {
+        if (!row.stat) continue;
+        const key = row.task.workspace || t('session.noWorkspace');
+        const bucket = byWorkspace.get(key) || { workspace: key, tokens: 0, work: 0, count: 0 };
+        bucket.tokens += row.stat.tokens.total;
+        bucket.work += row.stat.workMs;
+        bucket.count += 1;
+        byWorkspace.set(key, bucket);
+      }
+      const workspaceRows = Array.from(byWorkspace.values())
+        .sort((a, b) => b.tokens - a.tokens)
+        .slice(0, 6);
+      const workspaceMax = workspaceRows.reduce((max, row) => Math.max(max, row.tokens), 0) || 1;
+
+      const latest = rows.reduce((max, row) => Math.max(max, row.stat ? row.stat.computedAt || 0 : 0), 0);
+      const failed = state.stats.status === 'error';
+      const loading = state.stats.status === 'loading';
+      const unmeasured = rows.length - totals.measured;
+
+      async function refresh() {
+        setBusy(true);
+        try {
+          await store.refreshStats();
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      function sortButton(key, label) {
+        return h(
+          'button',
+          {
+            type: 'button',
+            className: 'td-ins-sort',
+            'aria-pressed': sort === key,
+            onClick: () => setSort(key),
+          },
+          label,
+        );
+      }
+
+      return h(
+        'div',
+        { className: 'td-insights' },
+        h(
+          'div',
+          { className: 'td-ins-toolbar' },
+          h(
+            'div',
+            { className: 'td-ins-chips' },
+            [['all', t('insights.rangeAll')], ['7', t('insights.range7')], ['30', t('insights.range30')]].map(([value, label]) => h(
+              'button',
+              {
+                key: value,
+                type: 'button',
+                className: 'td-chip',
+                'aria-pressed': range === value,
+                onClick: () => setRange(value),
+              },
+              label,
+            )),
+          ),
+          h('span', { style: { flex: 1 } }),
+          latest
+            ? h('span', { className: 'td-ins-stamp' }, fmt(t('insights.updatedAt'), {
+              time: new Date(latest).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
+            }))
+            : null,
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'td-btn td-btn-sm',
+              disabled: busy,
+              onClick: refresh,
+            },
+            h(Icon, { name: 'clock', size: 12 }),
+            busy ? t('insights.refreshing') : t('insights.refresh'),
+          ),
+        ),
+        failed
+          ? h('div', { className: 'td-ins-notice is-error' }, h(Icon, { name: 'alert', size: 13 }), h('span', null, t('insights.error')))
+          : null,
+        h(
+          'div',
+          { className: 'td-ins-kpis' },
+          h('div', { className: 'td-ins-kpi' }, h('div', { className: 'td-ins-kpi-label' }, t('insights.sessions')), h('div', { className: 'td-ins-kpi-value' }, rows.length), h('div', { className: 'td-ins-kpi-hint' }, fmt(t('insights.runningHint'), { n: totals.running }))),
+          h('div', { className: 'td-ins-kpi' }, h('div', { className: 'td-ins-kpi-label' }, t('insights.totalTokens')), h('div', { className: 'td-ins-kpi-value' }, formatTokens(composition.total)), h('div', { className: 'td-ins-kpi-hint' }, fmt(t('insights.measuredHint'), { n: totals.measured }))),
+          h('div', { className: 'td-ins-kpi' }, h('div', { className: 'td-ins-kpi-label' }, t('insights.totalWork')), h('div', { className: 'td-ins-kpi-value' }, formatDuration(totals.work)), h('div', { className: 'td-ins-kpi-hint' }, t('insights.workHint'))),
+          h('div', { className: 'td-ins-kpi' }, h('div', { className: 'td-ins-kpi-label' }, t('insights.totalTurns')), h('div', { className: 'td-ins-kpi-value' }, totals.turns), h('div', { className: 'td-ins-kpi-hint' }, totals.turns ? fmt(t('insights.avgTurn'), { value: formatDuration(Math.round(totals.work / totals.turns)) }) : t('insights.noData'))),
+        ),
+        h(
+          'div',
+          { className: 'td-card td-ins-card' },
+          h(
+            'div',
+            { className: 'td-ins-card-head' },
+            h('div', { className: 'td-ins-card-title' }, t('insights.composition')),
+            h('div', { className: 'td-ins-legend' },
+              [['is-read', t('insights.cacheRead'), composition.cacheRead],
+                ['is-input', t('insights.input'), composition.input],
+                ['is-output', t('insights.output'), composition.output],
+                ['is-write', t('insights.cacheWrite'), composition.cacheWrite]].map(([cls, label, value]) => h(
+                'span',
+                { key: cls, className: `td-ins-legend-item ${cls}` },
+                h('span', { className: 'td-ins-dot' }),
+                h('span', null, label),
+                h('strong', null, formatTokens(value)),
+              ))),
+          ),
+          h(TokenBar, { tokens: composition, title: t('insights.compositionHint') }),
+        ),
+        h(
+          'div',
+          { className: 'td-card td-ins-card' },
+          h(
+            'div',
+            { className: 'td-ins-card-head' },
+            h('div', { className: 'td-ins-card-title' }, t('insights.byTask')),
+            h(
+              'div',
+              { className: 'td-ins-sorts' },
+              sortButton('tokens', t('insights.sortTokens')),
+              sortButton('work', t('insights.sortWork')),
+              sortButton('turns', t('insights.sortTurns')),
+              sortButton('recent', t('insights.sortRecent')),
+            ),
+          ),
+          rows.length === 0
+            ? h('div', { className: 'td-ins-empty' }, h(Icon, { name: 'search', size: 16 }), h('span', null, t('insights.empty')))
+            : h(
+              'div',
+              { className: 'td-ins-table' },
+              h(
+                'div',
+                { className: 'td-ins-tr td-ins-thead' },
+                h('span', null, t('insights.colTask')),
+                h('span', null, t('insights.colTurns')),
+                h('span', null, t('insights.colWork')),
+                h('span', null, t('insights.colSpan')),
+                h('span', null, t('insights.colTokens')),
+              ),
+              sorted.map((row) => h(
+                'button',
+                {
+                  key: row.task.id,
+                  type: 'button',
+                  className: 'td-ins-tr td-ins-row',
+                  onClick: () => store.openTask(row.task.id),
+                },
+                h(
+                  'span',
+                  { className: 'td-ins-task' },
+                  h('span', { className: 'td-row-dot', style: statusStyle(row.task.status) }),
+                  h('span', { className: 'td-ins-task-title' }, row.task.title),
+                  h('span', { className: 'td-ins-task-key' }, `#${shortSessionKey(row.task.id)}`),
+                ),
+                h('span', { className: 'td-ins-num' }, row.stat ? row.stat.turns : '—'),
+                h('span', { className: 'td-ins-num' }, row.stat ? formatDuration(row.stat.workMs) : '—'),
+                h('span', { className: 'td-ins-num td-ins-muted' }, row.stat ? formatDuration(row.stat.spanMs) : '—'),
+                h(
+                  'span',
+                  { className: 'td-ins-tokens' },
+                  row.stat
+                    ? h('span', { className: 'td-ins-token-total' }, formatTokens(row.stat.tokens.total))
+                    : h('span', { className: 'td-ins-muted' }, loading ? t('insights.loading') : '—'),
+                  row.stat ? h(TokenBar, { tokens: row.stat.tokens }) : null,
+                ),
+              )),
+            ),
+          unmeasured > 0 && !failed
+            ? h('div', { className: 'td-ins-notice' }, h(Icon, { name: 'clock', size: 12 }), h('span', null, fmt(t('insights.partial'), { n: unmeasured })))
+            : null,
+        ),
+        workspaceRows.length > 0
+          ? h(
+            'div',
+            { className: 'td-card td-ins-card' },
+            h('div', { className: 'td-ins-card-head' }, h('div', { className: 'td-ins-card-title' }, t('insights.workspaces'))),
+            workspaceRows.map((row) => h(
+              'div',
+              { key: row.workspace, className: 'td-ins-ws' },
+              h('span', { className: 'td-ins-ws-name', title: row.workspace }, row.workspace),
+              h('span', { className: 'td-ins-ws-bar' }, h('span', { style: { width: `${(row.tokens / workspaceMax) * 100}%` } })),
+              h('span', { className: 'td-ins-num' }, formatTokens(row.tokens)),
+              h('span', { className: 'td-ins-num td-ins-muted' }, formatDuration(row.work)),
+            )),
+          )
+          : null,
+      );
+    }
+
     function Dashboard(props) {
       const ctx = props.ctx;
       const store = props.store;
@@ -1546,11 +2058,14 @@ window.__ModuleLoader__.load({
             h(
               'nav',
               { className: 'td-nav', role: 'tablist', 'aria-label': t('dashboard.title') },
-              h('button', { type: 'button', className: 'td-nav-tab', role: 'tab', 'aria-selected': tab === 'overview', onClick: () => { setTab('overview'); setFilter('all'); } }, t('dashboard.overview')),
-              h('button', { type: 'button', className: 'td-nav-tab', role: 'tab', 'aria-selected': tab === 'all', onClick: () => setTab('all') }, t('dashboard.all')),
-              h('button', { type: 'button', className: 'td-nav-tab', role: 'tab', 'aria-selected': tab === 'review', onClick: () => { setTab('review'); setFilter('all'); } }, t('dashboard.reviewQueue'), h('span', { className: 'td-nav-count' }, counts.review)),
+              h('button', { type: 'button', className: 'td-nav-tab', role: 'tab', 'aria-selected': state.view !== 'insights' && tab === 'overview', onClick: () => { store.backToDashboard(); setTab('overview'); setFilter('all'); } }, t('dashboard.overview')),
+              h('button', { type: 'button', className: 'td-nav-tab', role: 'tab', 'aria-selected': state.view !== 'insights' && tab === 'all', onClick: () => { store.backToDashboard(); setTab('all'); } }, t('dashboard.all')),
+              h('button', { type: 'button', className: 'td-nav-tab', role: 'tab', 'aria-selected': state.view !== 'insights' && tab === 'review', onClick: () => { store.backToDashboard(); setTab('review'); setFilter('all'); } }, t('dashboard.reviewQueue'), h('span', { className: 'td-nav-count' }, counts.review)),
+              h('button', { type: 'button', className: 'td-nav-tab', role: 'tab', 'aria-selected': state.view === 'insights', onClick: () => store.openInsights() }, t('dashboard.insights')),
             ),
-            h(
+            state.view === 'insights'
+              ? h(InsightsBody, { t, state, store })
+              : h(
               'div',
               { className: 'td-grid' },
               h(
@@ -1791,6 +2306,7 @@ window.__ModuleLoader__.load({
       const checks = task.checks || [];
       const done = checks.filter((check) => check.done).length;
       const ready = checks.length > 0 && done === checks.length;
+      const stat = state && state.stats ? state.stats.byId[task.id] || null : null;
       const [nextDraft, setNextDraft] = React.useState(task.nextAction || '');
       const [checkDraft, setCheckDraft] = React.useState('');
 
@@ -2282,6 +2798,24 @@ window.__ModuleLoader__.load({
                 { className: 'td-prop' },
                 h('span', { className: 'td-prop-label' }, h(Icon, { name: 'branch', size: 11 }), t('detail.children')),
                 h('span', { className: 'td-prop-value' }, children.length),
+              ),
+              h(
+                'div',
+                { className: 'td-prop' },
+                h('span', { className: 'td-prop-label' }, h(Icon, { name: 'clock', size: 11 }), t('detail.workTime')),
+                h('span', { className: 'td-prop-value', title: stat ? `${t('insights.colSpan')} ${formatDuration(stat.spanMs)}` : '' }, stat ? formatDuration(stat.workMs) : '—'),
+              ),
+              h(
+                'div',
+                { className: 'td-prop' },
+                h('span', { className: 'td-prop-label' }, h(Icon, { name: 'layers', size: 11 }), t('detail.tokenUsage')),
+                h('span', { className: 'td-prop-value', title: stat ? `${t('insights.input')} ${stat.tokens.input} · ${t('insights.cacheRead')} ${stat.tokens.cacheRead} · ${t('insights.output')} ${stat.tokens.output}` : '' }, stat ? formatTokens(stat.tokens.total) : formatTokens(task.tokens && task.tokens.total)),
+              ),
+              h(
+                'div',
+                { className: 'td-prop' },
+                h('span', { className: 'td-prop-label' }, h(Icon, { name: 'check', size: 11 }), t('detail.turns')),
+                h('span', { className: 'td-prop-value' }, stat ? stat.turns : '—'),
               ),
             ),
           ),
@@ -3385,6 +3919,78 @@ window.__ModuleLoader__.load({
         background: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1.5px var(--dsw-alias-bg-base);
       }
 
+      /* Insights */
+      .td-insights { display: grid; gap: 12px; padding-top: 16px; }
+      .td-ins-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .td-ins-chips { display: flex; align-items: center; gap: 6px; }
+      .td-ins-stamp { color: var(--dsw-alias-label-secondary); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+      .td-ins-notice {
+        display: flex; align-items: center; gap: 7px;
+        padding: 9px 11px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 9px;
+        background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: 11.5px;
+      }
+      .td-ins-notice.is-error { color: var(--dsw-alias-state-error-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 34%, var(--dsw-alias-border-l1)); }
+      .td-ins-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+      .td-ins-kpi {
+        min-width: 0; padding: 12px 13px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px;
+        background: var(--dsw-alias-bg-layer-1);
+      }
+      .td-ins-kpi-label { color: var(--dsw-alias-label-secondary); font-size: 10.5px; font-weight: 560; }
+      .td-ins-kpi-value { margin-top: 5px; font-size: 21px; font-weight: 620; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+      .td-ins-kpi-hint { margin-top: 3px; color: var(--dsw-alias-label-secondary); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .td-ins-card { padding: 13px 14px 15px; }
+      .td-ins-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+      .td-ins-card-title { font-size: 10.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--dsw-alias-label-secondary); }
+      .td-ins-legend { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .td-ins-legend-item { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--dsw-alias-label-secondary); }
+      .td-ins-legend-item strong { color: var(--dsw-alias-label-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+      .td-ins-dot { width: 7px; height: 7px; border-radius: 2px; }
+      .td-ins-legend-item.is-read .td-ins-dot, .td-ins-seg.is-read { background: var(--dsw-alias-brand-primary); }
+      .td-ins-legend-item.is-input .td-ins-dot, .td-ins-seg.is-input { background: color-mix(in srgb, var(--dsw-alias-label-primary) 42%, transparent); }
+      .td-ins-legend-item.is-output .td-ins-dot, .td-ins-seg.is-output { background: var(--dsw-alias-state-success-primary); }
+      .td-ins-legend-item.is-write .td-ins-dot, .td-ins-seg.is-write { background: var(--dsw-alias-state-warn-primary); }
+      .td-ins-bar {
+        display: flex; align-items: stretch; gap: 1px; height: 9px; margin-top: 11px;
+        border-radius: 5px; overflow: hidden; background: var(--dsw-alias-bg-layer-2);
+      }
+      .td-ins-bar.is-empty { background: var(--dsw-alias-bg-layer-2); }
+      .td-ins-seg { display: block; height: 100%; }
+      .td-ins-table { display: grid; margin-top: 10px; }
+      .td-ins-tr {
+        display: grid; grid-template-columns: minmax(0, 1fr) 48px 74px 74px 132px;
+        align-items: center; gap: 10px; padding: 7px 2px;
+      }
+      .td-ins-thead {
+        color: var(--dsw-alias-label-secondary); font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+        border-bottom: 1px solid var(--dsw-alias-border-l1); padding-bottom: 5px;
+      }
+      .td-ins-row {
+        width: 100%; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 62%, transparent);
+        background: transparent; text-align: left; cursor: pointer; border-radius: 0; padding: 8px 2px;
+      }
+      .td-ins-row:last-child { border-bottom: 0; }
+      .td-ins-row:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary) 3.2%, transparent); }
+      .td-ins-task { display: flex; align-items: center; gap: 7px; min-width: 0; }
+      .td-ins-task-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.2px; font-weight: 540; }
+      .td-ins-task-key { flex: none; color: var(--dsw-alias-label-secondary); font-size: 10px; font-variant-numeric: tabular-nums; }
+      .td-ins-num { font-size: 11.5px; font-variant-numeric: tabular-nums; text-align: right; }
+      .td-ins-muted { color: var(--dsw-alias-label-secondary); }
+      .td-ins-tokens { display: grid; gap: 4px; }
+      .td-ins-token-total { font-size: 11.5px; font-weight: 560; font-variant-numeric: tabular-nums; text-align: right; }
+      .td-ins-tokens .td-ins-bar { height: 5px; margin-top: 0; }
+      .td-ins-sorts { display: flex; align-items: center; gap: 3px; }
+      .td-ins-sort {
+        padding: 3px 8px; border: 1px solid transparent; border-radius: 999px; background: transparent;
+        color: var(--dsw-alias-label-secondary); font-size: 10.5px; cursor: pointer;
+      }
+      .td-ins-sort:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+      .td-ins-sort[aria-pressed='true'] { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font-weight: 580; }
+      .td-ins-empty { display: flex; align-items: center; gap: 7px; padding: 16px 2px; color: var(--dsw-alias-label-secondary); font-size: 11.5px; }
+      .td-ins-ws { display: grid; grid-template-columns: minmax(0, 1fr) 120px 62px 62px; align-items: center; gap: 10px; padding: 6px 0; }
+      .td-ins-ws-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+      .td-ins-ws-bar { height: 6px; border-radius: 4px; background: var(--dsw-alias-bg-layer-2); overflow: hidden; }
+      .td-ins-ws-bar span { display: block; height: 100%; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 72%, transparent); }
+
       /* Responsive */
       @container (max-width: 900px) {
         .td-grid { grid-template-columns: 1fr; }
@@ -3393,8 +3999,16 @@ window.__ModuleLoader__.load({
         .td-detail-rail { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
         .td-detail-rail > * { margin: 0; }
       }
+      @media (max-width: 900px) {
+        .td-ins-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .td-ins-tr { grid-template-columns: minmax(0, 1fr) 42px 66px 118px; }
+        .td-ins-tr > :nth-child(4) { display: none; }
+      }
       @media (max-width: 760px) {
         .td-inner, .td-detail { padding-left: 18px; padding-right: 18px; }
+        .td-ins-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .td-ins-ws { grid-template-columns: minmax(0, 1fr) 80px 58px; }
+        .td-ins-ws > :nth-child(4) { display: none; }
         .td-filter-actions { width: 100%; justify-content: space-between; }
         .td-sort { display: none; }
         .td-auto-inline-label { display: none; }
@@ -3416,6 +4030,10 @@ window.__ModuleLoader__.load({
       }
       @media (max-width: 520px) {
         .td-inner, .td-detail { padding-left: 14px; padding-right: 14px; }
+        .td-ins-kpis { grid-template-columns: minmax(0, 1fr); }
+        .td-ins-tr { grid-template-columns: minmax(0, 1fr) 62px 100px; }
+        .td-ins-tr > :nth-child(2) { display: none; }
+        .td-ins-card-head { align-items: flex-start; }
         .td-row { grid-template-columns: minmax(0, 1fr); gap: 7px; }
         .td-row-side { display: flex; align-items: center; gap: 10px; padding-left: 14px; }
         .td-row-side .td-progress { flex: 1; }

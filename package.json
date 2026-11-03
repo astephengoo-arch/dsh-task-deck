@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-task-deck",
-  "version": "1.1.6",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "Task Deck — a personal multi-session mission control over the live DSH session catalog.",
@@ -57,7 +57,7 @@
     "sidebar"
   ],
   "scripts": {
-    "validate": "node --check client.js && node --check index.js",
+    "validate": "node --check client.js && node --check index.js && node --test scripts/test-stats.mjs",
     "pack": "scripts/pack-release.sh"
   }
 }

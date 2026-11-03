@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0
+
+- Added a **Stats** page: per-conversation work time, wall-clock span, turns/steps and token usage, with totals, a token-composition bar, sortable rows and per-workspace aggregation.
+- Host half now computes stats from the durable log (`turn/start` → `turn/end`, `assistant/message.usage`) and serves them at `GET /task-deck/stats` (loopback only, numbers only, no message text). Fork children exclude the inherited parent prefix.
+- Task Detail shows work time, tokens and turns for the current conversation.
+- Stats are cached in `localStorage` (`dsh.taskDeck.stats.v1`) for an instant first paint and refreshed in the background; a conversation that is still running is re-measured every 30s while the page is open.
+- Added `node --test scripts/test-stats.mjs` to the validation script.
+
 ## 1.1.6
 
 - The conversation-header launcher always renders, even before the task list has resolved; with no task it opens the Task Deck panel instead of drawing nothing.
