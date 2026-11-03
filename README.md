@@ -15,16 +15,16 @@ Built for people who run many conversations and branches at once: see what is ru
 - **Continue / Fork / Handoff** — open the current conversation, create a real child session with `sessions.fork()`, or fork-and-mark-waiting for a parallel workflow.
 - **Personal annotation layer** — status overrides, Next Action, checks, priority, branch label, and alias are yours; they never rewrite the conversation.
 - **Idle auto-complete** — conversations idle from 1 hour to 30 days (default 14 days) move to Done automatically. Manual Waiting keeps one open; choose Auto to return to the rule.
-- **Stats page** — per-conversation work time, wall-clock span, turns and token usage (input / cache read / cache write / output), with totals, a token-composition bar, sortable rows and per-workspace aggregation. Work time and tokens are folded from the durable log by the Host half and served over `GET /task-deck/stats` (loopback only, numbers only).
+- **Stats page** — per-conversation work time, wall-clock span, turns and token usage (input / cache read / cache write / output). A hand-drawn SVG chart set (no chart library, no external request) adds a stacked daily token trend, a daily work-time line, a 7×24 activity heatmap, a token donut, a conversation timeline and KPI sparklines, over sortable rows and per-workspace aggregation. Work time and tokens are folded from the durable log by the Host half and served over `GET /task-deck/stats` (loopback only, numbers only).
 
 ## Install
 
 ### From a release tarball
 
-Download `dsh-task-deck-1.2.0.tgz` from the latest Release, then ask your DSH agent to run:
+Download `dsh-task-deck-1.3.0.tgz` from the latest Release, then ask your DSH agent to run:
 
 ```text
-plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.2.0.tgz
+plugin_manager install_bundle /absolute/path/to/dsh-task-deck-1.3.0.tgz
 ```
 
 Refresh the DSH Web GUI. The entry appears near the bottom of the sidebar, beside Plugins and Schedules.

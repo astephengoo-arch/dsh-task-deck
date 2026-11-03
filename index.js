@@ -36,22 +36,57 @@ function isCount(value) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
+const DAY_MS = 86_400_000;
+const MAX_DAYS = 180;
+const MAX_TURNS = 40;
+
+/** Local calendar day key (`YYYY-MM-DD`) for an instant, shifted by the caller's UTC offset. */
+function dayKey(time, tzOffset) {
+  const shifted = new Date(time - tzOffset * 60_000);
+  return shifted.toISOString().slice(0, 10);
+}
+
+/** Index into the 7×24 heat grid, Monday first. */
+function hourIndex(time, tzOffset) {
+  const shifted = new Date(time - tzOffset * 60_000);
+  const weekday = (shifted.getUTCDay() + 6) % 7;
+  return weekday * 24 + shifted.getUTCHours();
+}
+
+function dayBucket(map, time, tzOffset) {
+  const key = dayKey(time, tzOffset);
+  let bucket = map.get(key);
+  if (!bucket) {
+    bucket = { d: key, ms: 0, turns: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    map.set(key, bucket);
+  }
+  return bucket;
+}
+
 /**
  * Fold durable Session events into the numbers the dashboard shows.
  *
  * `inheritedEventCount` is the fork cut: a child session carries its parent's prefix, and none
  * of that prefix's turns or tokens belong to the child's own task.
  *
- * @param {{ header?: { createdAt?: number }, events?: readonly unknown[], inheritedEventCount?: number, now?: number }} input
+ * @param {{ header?: { createdAt?: number }, events?: readonly unknown[], inheritedEventCount?: number,
+ *   now?: number, tzOffset?: number, detail?: boolean }} input
  * @returns {{ createdAt: number, firstAt: number, lastAt: number, spanMs: number, workMs: number,
- *   turns: number, steps: number, inheritedEvents: number,
- *   tokens: { input: number, output: number, cacheRead: number, cacheWrite: number, total: number } }}
+ *   turns: number, steps: number, inheritedEvents: number, tzOffset: number,
+ *   tokens: { input: number, output: number, cacheRead: number, cacheWrite: number, total: number },
+ *   daily: Array<{ d: string, ms: number, turns: number, tokens: object }>,
+ *   hours: { tokens: number[], turns: number[] },
+ *   perTurn?: Array<{ n: number, start: number, ms: number, tokens: number, open?: true }> }}
  */
 export function foldSessionStats(input) {
   const header = (input && input.header) || {};
   const events = Array.isArray(input && input.events) ? input.events : [];
   const cut = typeof (input && input.inheritedEventCount) === 'number' ? input.inheritedEventCount : 0;
   const now = typeof (input && input.now) === 'number' ? input.now : Date.now();
+  const tzOffset = typeof (input && input.tzOffset) === 'number' && Number.isFinite(input.tzOffset)
+    ? input.tzOffset
+    : 0;
+  const detail = !!(input && input.detail);
 
   const createdAt = typeof header.createdAt === 'number' ? header.createdAt : 0;
   const tokens = EMPTY_BUCKETS();
@@ -70,6 +105,12 @@ export function foldSessionStats(input) {
   let openTurnStart = 0;
   let workMs = 0;
 
+  const days = new Map();
+  const hourTokens = new Array(168).fill(0);
+  const hourTurns = new Array(168).fill(0);
+  const perTurn = [];
+  let currentTurn = null;
+
   for (const event of own) {
     const time = typeof event.time === 'number' ? event.time : 0;
     if (time > 0) {
@@ -80,18 +121,49 @@ export function foldSessionStats(input) {
     if (event.type === 'turn/start') {
       turns += 1;
       openTurnStart = time;
+      if (time > 0) {
+        dayBucket(days, time, tzOffset).turns += 1;
+        hourTurns[hourIndex(time, tzOffset)] += 1;
+      }
+      if (detail) currentTurn = { n: turns, start: time, ms: 0, tokens: 0 };
     } else if (event.type === 'turn/end') {
-      if (openTurnStart > 0 && time >= openTurnStart) workMs += time - openTurnStart;
+      if (openTurnStart > 0 && time >= openTurnStart) {
+        const spent = time - openTurnStart;
+        workMs += spent;
+        dayBucket(days, openTurnStart, tzOffset).ms += spent;
+      }
       openTurnStart = 0;
+      if (detail && currentTurn) {
+        currentTurn.ms = time > currentTurn.start ? time - currentTurn.start : 0;
+        perTurn.push(currentTurn);
+        currentTurn = null;
+      }
     } else if (event.type === 'step/start') {
       steps += 1;
     } else if (event.type === 'assistant/message') {
       const usage = data.usage;
       if (usage && typeof usage === 'object') {
-        if (isCount(usage.inputTokens)) tokens.input += usage.inputTokens;
-        if (isCount(usage.outputTokens)) tokens.output += usage.outputTokens;
-        if (isCount(usage.cacheReadTokens)) tokens.cacheRead += usage.cacheReadTokens;
-        if (isCount(usage.cacheWriteTokens)) tokens.cacheWrite += usage.cacheWriteTokens;
+        const delta = {
+          input: isCount(usage.inputTokens) ? usage.inputTokens : 0,
+          output: isCount(usage.outputTokens) ? usage.outputTokens : 0,
+          cacheRead: isCount(usage.cacheReadTokens) ? usage.cacheReadTokens : 0,
+          cacheWrite: isCount(usage.cacheWriteTokens) ? usage.cacheWriteTokens : 0,
+        };
+        tokens.input += delta.input;
+        tokens.output += delta.output;
+        tokens.cacheRead += delta.cacheRead;
+        tokens.cacheWrite += delta.cacheWrite;
+        if (time > 0) {
+          const bucket = dayBucket(days, time, tzOffset);
+          bucket.tokens.input += delta.input;
+          bucket.tokens.output += delta.output;
+          bucket.tokens.cacheRead += delta.cacheRead;
+          bucket.tokens.cacheWrite += delta.cacheWrite;
+          hourTokens[hourIndex(time, tzOffset)] += delta.input + delta.output + delta.cacheRead + delta.cacheWrite;
+        }
+        if (detail && currentTurn) {
+          currentTurn.tokens += delta.input + delta.output + delta.cacheRead + delta.cacheWrite;
+        }
       }
     }
   }
@@ -99,10 +171,25 @@ export function foldSessionStats(input) {
   // An open turn is still burning wall-clock time; count it up to the last known moment.
   if (openTurnStart > 0) {
     const end = Math.max(lastAt, now);
-    if (end > openTurnStart) workMs += end - openTurnStart;
+    if (end > openTurnStart) {
+      const spent = end - openTurnStart;
+      workMs += spent;
+      dayBucket(days, openTurnStart, tzOffset).ms += spent;
+    }
+    if (detail && currentTurn) {
+      currentTurn.ms = Math.max(0, now - currentTurn.start);
+      currentTurn.open = true;
+      perTurn.push(currentTurn);
+      currentTurn = null;
+    }
   }
 
   const spanMs = createdAt > 0 && lastAt >= createdAt ? lastAt - createdAt : 0;
+
+  const cutoff = lastAt > 0 ? lastAt - MAX_DAYS * DAY_MS : 0;
+  const daily = Array.from(days.values())
+    .filter((bucket) => bucket.d > dayKey(cutoff, tzOffset))
+    .sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
 
   return {
     createdAt,
@@ -113,10 +200,14 @@ export function foldSessionStats(input) {
     turns,
     steps,
     inheritedEvents: cut,
+    tzOffset,
     tokens: {
       ...tokens,
       total: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite,
     },
+    daily,
+    hours: { tokens: hourTokens, turns: hourTurns },
+    ...(detail ? { perTurn: perTurn.slice(-MAX_TURNS) } : {}),
   };
 }
 
@@ -177,9 +268,11 @@ export function peekService(ctx, name) {
 export function createStatsResolver(ctx) {
   const cache = new Map();
 
-  function cached(id) {
+  function cached(id, tzOffset) {
     const entry = cache.get(id);
     if (!entry) return undefined;
+    // Time buckets are offset-dependent, so a changed time zone invalidates the entry.
+    if (entry.tzOffset !== tzOffset) return undefined;
     if (Date.now() - entry.at > CACHE_TTL_MS) {
       cache.delete(id);
       return undefined;
@@ -187,9 +280,9 @@ export function createStatsResolver(ctx) {
     return entry.stats;
   }
 
-  function remember(id, stats) {
+  function remember(id, stats, tzOffset) {
     cache.delete(id);
-    cache.set(id, { at: Date.now(), stats });
+    cache.set(id, { at: Date.now(), stats, tzOffset });
     while (cache.size > MAX_CACHED) {
       const oldest = cache.keys().next();
       if (oldest.done) break;
@@ -223,7 +316,7 @@ export function createStatsResolver(ctx) {
     };
   }
 
-  async function compute(id, signal) {
+  async function compute(id, signal, options) {
     const live = await readLive(id);
     const source = live || await readCold(id).catch(() => undefined);
     if (!source) return { id, reason: 'unreadable' };
@@ -233,19 +326,25 @@ export function createStatsResolver(ctx) {
       events: source.events,
       inheritedEventCount: source.inheritedEventCount,
       now: Date.now(),
+      tzOffset: options.tzOffset,
+      detail: options.detail,
     });
     const updatedAt = stats.lastAt || stats.createdAt;
     const record = { id, updatedAt, live: source.live, ...stats };
-    remember(id, record);
+    // A detail read is a superset of the list read, but the list cache should not pin the
+    // heavier per-turn array; remember only what every caller needs.
+    if (!options.detail) remember(id, record, options.tzOffset);
     return { id, stats: record };
   }
 
   /**
    * Resolve stats for a batch of session ids.
    * @param {readonly string[]} ids - session ids to resolve.
-   * @param {{ fresh?: boolean, signal?: AbortSignal }} options
+   * @param {{ fresh?: boolean, signal?: AbortSignal, tzOffset?: number, detail?: boolean }} options
    */
   async function resolve(ids, options = {}) {
+    const tzOffset = Number.isFinite(options.tzOffset) ? options.tzOffset : 0;
+    const detail = !!options.detail;
     const unique = [];
     const seen = new Set();
     for (const id of ids) {
@@ -259,13 +358,15 @@ export function createStatsResolver(ctx) {
 
     await mapWithLimit(batch, CONCURRENCY, async (id) => {
       if (options.signal && options.signal.aborted) return;
-      const hit = options.fresh ? undefined : cached(id);
+      // Per-turn data is only asked for one session at a time and is never served from the
+      // list cache, so a detail read always recomputes.
+      const hit = options.fresh || detail ? undefined : cached(id, tzOffset);
       if (hit) {
         sessions.push(hit);
         return;
       }
       try {
-        const result = await withTimeout(compute(id, options.signal), SESSION_TIMEOUT_MS);
+        const result = await withTimeout(compute(id, options.signal, { tzOffset, detail }), SESSION_TIMEOUT_MS);
         if (result.stats) sessions.push(result.stats);
         else skipped.push({ id: result.id, reason: result.reason || 'unreadable' });
       } catch (error) {
@@ -277,6 +378,7 @@ export function createStatsResolver(ctx) {
     return {
       ok: true,
       generatedAt: Date.now(),
+      tzOffset,
       sessions,
       skipped,
     };
@@ -323,6 +425,9 @@ export function apply(ctx) {
         const controller = new AbortController();
         req.on('close', () => controller.abort());
         const fresh = payload.searchParams.get('fresh') === '1';
+        const detail = payload.searchParams.get('detail') === '1';
+        const tzRaw = Number(payload.searchParams.get('tz'));
+        const tzOffset = Number.isFinite(tzRaw) && Math.abs(tzRaw) <= 14 * 60 ? tzRaw : 0;
         const raw = payload.searchParams.get('ids');
         const requested = raw
           ? raw.split(',').map((value) => value.trim()).filter(Boolean).slice(0, MAX_IDS)
@@ -338,7 +443,7 @@ export function apply(ctx) {
               ids = [];
             }
           }
-          return resolver.resolve(ids, { fresh, signal: controller.signal });
+          return resolver.resolve(ids, { fresh, detail, tzOffset, signal: controller.signal });
         };
         resolve()
           .then((body) => {

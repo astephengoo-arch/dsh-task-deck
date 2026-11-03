@@ -196,3 +196,98 @@ test('serves JSON for loopback GET and refuses everything else', async () => {
   route.handler(fakeRequest({ address: '10.0.0.7' }), remote);
   assert.equal(remote.code, 404);
 });
+
+// 2026-11-02T16:30:00Z and 2026-11-02T17:30:00Z straddle midnight in UTC+8.
+const T1 = Date.UTC(2026, 10, 2, 16, 30);
+const T2 = Date.UTC(2026, 10, 2, 17, 30);
+
+test('daily buckets follow the caller time zone', () => {
+  const events = [
+    { type: 'turn/start', seq: 1, time: T1, data: { turn: 1 } },
+    { type: 'assistant/message', seq: 2, time: T1 + 60_000, data: { usage: { inputTokens: 10, outputTokens: 5 } } },
+    { type: 'turn/end', seq: 3, time: T1 + 600_000, data: { turn: 1 } },
+    { type: 'turn/start', seq: 4, time: T2, data: { turn: 2 } },
+    { type: 'turn/end', seq: 5, time: T2 + 120_000, data: { turn: 2 } },
+  ];
+
+  const utc = foldSessionStats({ header: { createdAt: T1 }, events, now: T2 + 120_000, tzOffset: 0 });
+  assert.deepEqual(utc.daily.map((day) => day.d), ['2026-11-02']);
+
+  const beijing = foldSessionStats({ header: { createdAt: T1 }, events, now: T2 + 120_000, tzOffset: -480 });
+  assert.deepEqual(beijing.daily.map((day) => day.d), ['2026-11-03']);
+  assert.equal(beijing.daily[0].turns, 2);
+  assert.equal(beijing.daily[0].ms, 720_000);
+  assert.equal(beijing.daily[0].tokens.input, 10);
+});
+
+test('hour grid stays inside 168 cells and counts turns and tokens', () => {
+  const events = [
+    { type: 'turn/start', seq: 1, time: T1, data: { turn: 1 } },
+    { type: 'assistant/message', seq: 2, time: T1 + 1000, data: { usage: { inputTokens: 4, outputTokens: 6 } } },
+    { type: 'turn/end', seq: 3, time: T1 + 2000, data: { turn: 1 } },
+  ];
+  const stats = foldSessionStats({ header: { createdAt: T1 }, events, now: T1 + 2000, tzOffset: -480 });
+
+  assert.equal(stats.hours.tokens.length, 168);
+  assert.equal(stats.hours.turns.length, 168);
+  // 2026-11-03 is a Tuesday; 00:30 local in UTC+8 lands in cell 1*24 + 0.
+  assert.equal(stats.hours.turns[24], 1);
+  assert.equal(stats.hours.tokens[24], 10);
+  assert.equal(stats.hours.tokens.reduce((sum, value) => sum + value, 0), 10);
+});
+
+test('per-turn rows appear only on detail reads and are capped at 40', () => {
+  const events = [];
+  for (let turn = 1; turn <= 45; turn += 1) {
+    const start = T1 + turn * 10_000;
+    events.push({ type: 'turn/start', seq: turn * 2, time: start, data: { turn } });
+    events.push({ type: 'assistant/message', seq: turn * 2 + 1, time: start + 1000, data: { usage: { inputTokens: 1, outputTokens: 1 } } });
+    events.push({ type: 'turn/end', seq: turn * 2 + 2, time: start + 5000, data: { turn } });
+  }
+
+  const light = foldSessionStats({ header: { createdAt: T1 }, events, now: T1 + 500_000 });
+  assert.equal(light.perTurn, undefined);
+
+  const full = foldSessionStats({ header: { createdAt: T1 }, events, now: T1 + 500_000, detail: true });
+  assert.equal(full.perTurn.length, 40);
+  assert.equal(full.perTurn[0].n, 6);
+  assert.equal(full.perTurn[39].n, 45);
+  assert.equal(full.perTurn[0].ms, 5000);
+  assert.equal(full.perTurn[0].tokens, 2);
+});
+
+test('an open turn is marked open in the detail rows', () => {
+  const events = [
+    { type: 'turn/start', seq: 1, time: T1, data: { turn: 1 } },
+    { type: 'assistant/message', seq: 2, time: T1 + 1000, data: { usage: { inputTokens: 3 } } },
+  ];
+  const stats = foldSessionStats({ header: { createdAt: T1 }, events, now: T1 + 30_000, detail: true });
+
+  assert.equal(stats.perTurn.length, 1);
+  assert.equal(stats.perTurn[0].open, true);
+  assert.equal(stats.perTurn[0].ms, 30_000);
+  assert.equal(stats.perTurn[0].tokens, 3);
+});
+
+test('the resolver honours tz and detail options', async () => {
+  const ctx = {
+    sessions: {
+      get: () => ({
+        header: { createdAt: T1 },
+        inheritedEventCount: 0,
+        snapshotEvents: () => [
+          { type: 'turn/start', seq: 1, time: T1, data: { turn: 1 } },
+          { type: 'turn/end', seq: 2, time: T1 + 1000, data: { turn: 1 } },
+        ],
+      }),
+    },
+  };
+  const resolver = createStatsResolver(ctx);
+  const list = await resolver.resolve(['a'], { tzOffset: -480 });
+  assert.equal(list.tzOffset, -480);
+  assert.equal(list.sessions[0].daily[0].d, '2026-11-03');
+  assert.equal(list.sessions[0].perTurn, undefined);
+
+  const detail = await resolver.resolve(['a'], { tzOffset: -480, detail: true });
+  assert.equal(detail.sessions[0].perTurn.length, 1);
+});

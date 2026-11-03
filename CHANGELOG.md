@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+- Richer charts on the Stats page, all hand-drawn SVG (no new dependency, no external request):
+  stacked daily Token trend with a toggleable legend, daily work-time line, a 7×24 activity heatmap, a Token donut, a conversation timeline (Gantt), and 14-day sparklines inside the KPI cards.
+- Host now returns day/hour buckets (`daily`, `hours`) computed in the caller's time zone (`tz` query parameter); `detail=1` adds per-turn rows (`perTurn`, last 40).
+- Task Detail shows a per-turn work/token bar chart, fetched on demand when the task opens.
+- Stats cache moved to `v2` and is invalidated when the time zone changes; a full `localStorage` now degrades to summary-only instead of silently failing.
+- Added 5 more host tests (daily/hour buckets, per-turn cap, open turn, tz/detail resolver) for 13 total.
+
 ## 1.2.0
 
 - Added a **Stats** page: per-conversation work time, wall-clock span, turns/steps and token usage, with totals, a token-composition bar, sortable rows and per-workspace aggregation.

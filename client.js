@@ -60,6 +60,16 @@ window.__ModuleLoader__.load({
       'insights.loading': 'Reading…',
       'insights.partial': '{n} conversation(s) could not be measured yet.',
       'insights.workspaces': 'By workspace',
+      'insights.trend': 'Token trend',
+      'insights.trendHint': 'Daily provider-reported usage, stacked by class. Click a legend entry to mute it.',
+      'insights.workTrend': 'Daily work time',
+      'insights.workTrendHint': 'Closed turns only; an open turn counts up to now.',
+      'insights.heatmap': 'When you work',
+      'insights.heatmapHint': 'Tokens by weekday and hour, in your time zone.',
+      'insights.timeline': 'Conversation timeline',
+      'insights.expand': 'Show more',
+      'insights.collapse': 'Show less',
+      'insights.totalShort': 'total',
       'dashboard.filterAll': 'All',
       'dashboard.sortUpdated': 'Updated recently',
       'dashboard.search': 'Search tasks, branches, sessions…',
@@ -119,6 +129,10 @@ window.__ModuleLoader__.load({
       'detail.workTime': 'Work time',
       'detail.tokenUsage': 'Tokens',
       'detail.turns': 'Turns',
+      'detail.turnDetail': 'Per-turn cost',
+      'detail.turnDetailHint': 'Latest 40 turns',
+      'detail.turnPending': 'Per-turn data is not loaded yet.',
+      'detail.turnOpen': 'running',
       'detail.none': 'None',
       'detail.progress': 'Complete',
       'detail.reviewGate': 'Review gate',
@@ -328,6 +342,16 @@ window.__ModuleLoader__.load({
       'insights.loading': '读取中…',
       'insights.partial': '还有 {n} 个会话未能计算。',
       'insights.workspaces': '按工作区',
+      'insights.trend': 'Token 趋势',
+      'insights.trendHint': '按天堆叠的 provider 上报用量，点图例可隐藏某一类。',
+      'insights.workTrend': '每日耗时',
+      'insights.workTrendHint': '只统计已闭合的轮次，进行中的轮次计到此刻。',
+      'insights.heatmap': '活跃时段',
+      'insights.heatmapHint': '按星期与小时统计的 Token（按你的时区）。',
+      'insights.timeline': '会话时间轴',
+      'insights.expand': '展开更多',
+      'insights.collapse': '收起',
+      'insights.totalShort': '合计',
       'dashboard.filterAll': '全部',
       'dashboard.sortUpdated': '最近更新',
       'dashboard.search': '搜索任务、分支或会话…',
@@ -387,6 +411,10 @@ window.__ModuleLoader__.load({
       'detail.workTime': '耗时',
       'detail.tokenUsage': 'Token',
       'detail.turns': '轮数',
+      'detail.turnDetail': '每轮耗时',
+      'detail.turnDetailHint': '最近 40 轮',
+      'detail.turnPending': '还没有读取到逐轮数据。',
+      'detail.turnOpen': '进行中',
       'detail.none': '无',
       'detail.progress': '完成度',
       'detail.reviewGate': '评审门禁',
@@ -585,7 +613,7 @@ window.__ModuleLoader__.load({
     const STATS_KEY = 'dsh.taskDeck.stats.v1';
     const STATS_PATH = '/task-deck/stats';
     const STATS_BATCH = 8;
-    const STATS_CACHE_LIMIT = 200;
+    const STATS_CACHE_LIMIT = 120;
     const AUTO_DONE_HOURS_OPTIONS = [0, 1, 3, 6, 12, 24, 72, 168, 336, 720];
     const DEFAULT_AUTO_DONE_HOURS = 336;
     const EMPTY_LIST = Object.freeze({
@@ -652,11 +680,21 @@ window.__ModuleLoader__.load({
       return restHours ? `${days}d ${restHours}h` : `${days}d`;
     }
 
+    function timezoneOffset() {
+      try {
+        return new Date().getTimezoneOffset();
+      } catch (error) {
+        return 0;
+      }
+    }
+
     function loadStatsCache() {
       try {
         const raw = window.localStorage.getItem(STATS_KEY);
         const parsed = raw ? JSON.parse(raw) : null;
         if (!parsed || typeof parsed !== 'object' || !parsed.byId) return {};
+        // Day/hour buckets are cut in one time zone; a moved user must not see stale ones.
+        if (parsed.v !== 2 || parsed.tz !== timezoneOffset()) return {};
         const out = {};
         for (const [id, value] of Object.entries(parsed.byId)) {
           if (!value || typeof value !== 'object') continue;
@@ -669,18 +707,30 @@ window.__ModuleLoader__.load({
       }
     }
 
+    function statsPayload(byId) {
+      const entries = Object.entries(byId)
+        .filter(([, value]) => value && typeof value === 'object')
+        .sort((a, b) => (b[1].computedAt || 0) - (a[1].computedAt || 0))
+        .slice(0, STATS_CACHE_LIMIT);
+      return { v: 2, tz: timezoneOffset(), byId: Object.fromEntries(entries) };
+    }
+
     function saveStatsCache(byId) {
       try {
-        const entries = Object.entries(byId)
-          .filter(([, value]) => value && typeof value === 'object')
-          .sort((a, b) => (b[1].computedAt || 0) - (a[1].computedAt || 0))
-          .slice(0, STATS_CACHE_LIMIT);
-        window.localStorage.setItem(STATS_KEY, JSON.stringify({
-          v: 1,
-          byId: Object.fromEntries(entries),
-        }));
+        window.localStorage.setItem(STATS_KEY, JSON.stringify(statsPayload(byId)));
       } catch (error) {
-        /* A full or disabled storage must not break the page. */
+        // Quota is usually spent on the day/hour series, so fall back to summary numbers only.
+        try {
+          const slim = {};
+          for (const [id, value] of Object.entries(byId)) {
+            if (!value || typeof value !== 'object') continue;
+            const { daily, hours, perTurn, ...rest } = value;
+            slim[id] = rest;
+          }
+          window.localStorage.setItem(STATS_KEY, JSON.stringify(statsPayload(slim)));
+        } catch (second) {
+          /* A storage that refuses both writes must not break the page. */
+        }
       }
     }
 
@@ -977,14 +1027,19 @@ window.__ModuleLoader__.load({
         saveStatsCache(statsById);
       }
 
-      function requestStats(ids, fresh) {
+      function requestStats(ids, fresh, detail) {
         let chain = Promise.resolve([]);
         const collected = [];
+        const query = [
+          `tz=${timezoneOffset()}`,
+          fresh ? 'fresh=1' : '',
+          detail ? 'detail=1' : '',
+        ].filter(Boolean).join('&');
         for (let index = 0; index < ids.length; index += STATS_BATCH) {
           const chunk = ids.slice(index, index + STATS_BATCH);
           chain = chain.then(() => {
             if (disposed) return undefined;
-            const url = `${STATS_PATH}?ids=${encodeURIComponent(chunk.join(','))}${fresh ? '&fresh=1' : ''}`;
+            const url = `${STATS_PATH}?ids=${encodeURIComponent(chunk.join(','))}&${query}`;
             return window.fetch(url, { headers: { accept: 'application/json' } })
               .then((response) => {
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1011,7 +1066,7 @@ window.__ModuleLoader__.load({
         statsStatus = 'loading';
         statsError = '';
         notify();
-        const run = requestStats(ids, !!opts.fresh)
+        const run = requestStats(ids, !!opts.fresh, false)
           .then((records) => {
             const stamped = records.map((record) => ({ ...record, computedAt: Date.now() }));
             mergeStats(stamped);
@@ -1027,6 +1082,25 @@ window.__ModuleLoader__.load({
           });
         statsInflight = run;
         return run;
+      }
+
+      // Per-turn rows are only needed on one task at a time, so they are fetched on demand
+      // and merged into the same record instead of riding along with every list batch.
+      function loadTurnDetail(sessionId) {
+        if (disposed || !sessionId) return Promise.resolve();
+        const existing = statsById[sessionId];
+        if (existing && Array.isArray(existing.perTurn)) return Promise.resolve();
+        return requestStats([sessionId], false, true)
+          .then((records) => {
+            const record = records[0];
+            if (!record) return;
+            const previous = statsById[sessionId] || {};
+            mergeStats([{ ...previous, ...record, perTurn: record.perTurn || [], computedAt: Date.now() }]);
+            notify();
+          })
+          .catch(() => {
+            /* The detail chart simply stays empty; the rest of the page is unaffected. */
+          });
       }
 
       function rebuild() {
@@ -1096,6 +1170,9 @@ window.__ModuleLoader__.load({
         },
         loadStats(options) {
           return loadStats(options);
+        },
+        loadTurnDetail(sessionId) {
+          return loadTurnDetail(sessionId);
         },
         refreshStats() {
           return loadStats({ fresh: true });
@@ -1553,6 +1630,577 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /* ------------------------------------------------------------------ charts */
+
+    function useChartWidth(fallback) {
+      const ref = React.useRef(null);
+      const [width, setWidth] = React.useState(fallback || 640);
+      React.useEffect(() => {
+        const node = ref.current;
+        if (!node) return undefined;
+        function apply(next) {
+          if (Number.isFinite(next) && next > 0) setWidth(Math.round(next));
+        }
+        apply(node.getBoundingClientRect ? node.getBoundingClientRect().width : 0);
+        if (typeof window.ResizeObserver !== 'function') return undefined;
+        const observer = new window.ResizeObserver((entries) => {
+          const rect = entries[0] && entries[0].contentRect;
+          if (rect) apply(rect.width);
+        });
+        observer.observe(node);
+        return () => observer.disconnect();
+      }, []);
+      return [ref, width];
+    }
+
+    // Round an axis maximum up to a 1/2/5·10^n step so tick labels stay readable.
+    function niceMax(value) {
+      const raw = Number(value);
+      if (!(raw > 0)) return 1;
+      const exponent = Math.floor(Math.log10(raw));
+      const base = Math.pow(10, exponent);
+      const scaled = raw / base;
+      const step = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+      return step * base;
+    }
+
+    function axisTicks(max, count) {
+      const ticks = [];
+      const steps = Math.max(1, count || 3);
+      for (let index = 0; index <= steps; index += 1) ticks.push((max / steps) * index);
+      return ticks;
+    }
+
+    function ChartTip(props) {
+      const tip = props.tip;
+      if (!tip) return null;
+      return h(
+        'div',
+        {
+          className: 'td-chart-tip',
+          style: {
+            left: `${tip.x}px`,
+            top: `${tip.y}px`,
+            transform: tip.flip ? 'translate(-100%, -50%)' : 'translate(8px, -50%)',
+          },
+        },
+        tip.title ? h('div', { className: 'td-chart-tip-title' }, tip.title) : null,
+        (tip.rows || []).map((row) => h(
+          'div',
+          { className: 'td-chart-tip-row', key: row.label },
+          h('span', { className: `td-chart-dot ${row.className || ''}` }),
+          h('span', { className: 'td-chart-tip-label' }, row.label),
+          h('strong', null, row.value),
+        )),
+      );
+    }
+
+    function chartPointer(event, node) {
+      if (!node || !node.getBoundingClientRect) return { x: 0, y: 0 };
+      const rect = node.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top, width: rect.width };
+    }
+
+    /** Stacked area over daily buckets: one series per token class, bottom-up. */
+    function StackedAreaChart(props) {
+      const series = props.series || [];
+      const labels = props.labels || [];
+      const [ref, width] = useChartWidth(props.fallbackWidth || 640);
+      const [hover, setHover] = React.useState(-1);
+      const height = props.height || 190;
+      const pad = { top: 10, right: 10, bottom: 20, left: 40 };
+      const innerW = Math.max(10, width - pad.left - pad.right);
+      const innerH = Math.max(10, height - pad.top - pad.bottom);
+      const count = labels.length;
+      const totals = labels.map((_, index) => series.reduce((sum, item) => sum + (item.values[index] || 0), 0));
+      const max = niceMax(Math.max(1, ...totals));
+      const xOf = (index) => (count <= 1 ? pad.left + innerW / 2 : pad.left + (innerW * index) / (count - 1));
+      const yOf = (value) => pad.top + innerH - (Math.max(0, value) / max) * innerH;
+
+      const stack = [];
+      let running = labels.map(() => 0);
+      for (const item of series) {
+        const lower = running.slice();
+        running = running.map((value, index) => value + (item.values[index] || 0));
+        stack.push({ item, lower, upper: running.slice() });
+      }
+
+      function pathFor(lower, upper) {
+        let path = '';
+        for (let index = 0; index < count; index += 1) {
+          const x = xOf(index);
+          path += `${index === 0 ? 'M' : 'L'}${x.toFixed(1)} ${yOf(upper[index]).toFixed(1)} `;
+        }
+        for (let index = count - 1; index >= 0; index -= 1) {
+          path += `L${xOf(index).toFixed(1)} ${yOf(lower[index]).toFixed(1)} `;
+        }
+        return `${path}Z`;
+      }
+
+      function move(event) {
+        const point = chartPointer(event, ref.current);
+        if (!count) return;
+        const ratio = (point.x - pad.left) / Math.max(1, innerW);
+        const index = Math.max(0, Math.min(count - 1, Math.round(ratio * (count - 1))));
+        setHover(index);
+      }
+
+      const tipIndex = hover >= 0 && hover < count ? hover : -1;
+      const tip = tipIndex >= 0
+        ? {
+          x: xOf(tipIndex),
+          y: height / 2,
+          flip: xOf(tipIndex) > width * 0.6,
+          title: labels[tipIndex],
+          rows: series.map((item) => ({
+            label: item.label,
+            value: formatTokens(item.values[tipIndex] || 0),
+            className: item.className,
+          })),
+        }
+        : null;
+
+      return h(
+        'div',
+        { className: 'td-chart', ref },
+        h(
+          'svg',
+          {
+            width: '100%',
+            height,
+            role: 'img',
+            'aria-label': props.ariaLabel || '',
+            onMouseMove: move,
+            onMouseLeave: () => setHover(-1),
+          },
+          h('title', null, props.ariaLabel || ''),
+          axisTicks(max, 3).map((tick, index) => h('g', { key: `tick-${index}` },
+            h('line', { className: 'td-chart-grid', x1: pad.left, x2: width - pad.right, y1: yOf(tick), y2: yOf(tick) }),
+            h('text', { className: 'td-chart-axis', x: pad.left - 6, y: yOf(tick) + 3, textAnchor: 'end' }, formatTokens(tick)))),
+          stack.map((entry) => h('path', {
+            key: entry.item.key,
+            className: `td-chart-area ${entry.item.className || ''}`,
+            d: pathFor(entry.lower, entry.upper),
+          })),
+          count > 1 ? labels.map((label, index) => (count <= 8 || index % Math.ceil(count / 6) === 0
+            ? h('text', {
+              key: `x-${label}`,
+              className: 'td-chart-axis',
+              x: xOf(index),
+              y: height - 6,
+              textAnchor: index === 0 ? 'start' : index === count - 1 ? 'end' : 'middle',
+            }, label.slice(5))
+            : null)) : null,
+          tipIndex >= 0
+            ? h('line', {
+              className: 'td-chart-guide',
+              x1: xOf(tipIndex),
+              x2: xOf(tipIndex),
+              y1: pad.top,
+              y2: pad.top + innerH,
+            })
+            : null,
+          tipIndex >= 0
+            ? series.map((item, seriesIndex) => {
+              const cumulative = series
+                .slice(0, seriesIndex + 1)
+                .reduce((sum, other) => sum + (other.values[tipIndex] || 0), 0);
+              return h('circle', {
+                key: `dot-${item.key}`,
+                className: `td-chart-point ${item.className || ''}`,
+                cx: xOf(tipIndex),
+                cy: yOf(cumulative),
+                r: 2.6,
+              });
+            })
+            : null,
+        ),
+        h(ChartTip, { tip }),
+      );
+    }
+
+    /** A single daily series (work time) with the same x scale as the area chart. */
+    function LineChart(props) {
+      const values = props.values || [];
+      const labels = props.labels || [];
+      const [ref, width] = useChartWidth(props.fallbackWidth || 640);
+      const [hover, setHover] = React.useState(-1);
+      const height = props.height || 120;
+      const pad = { top: 10, right: 10, bottom: 18, left: 44 };
+      const innerW = Math.max(10, width - pad.left - pad.right);
+      const innerH = Math.max(10, height - pad.top - pad.bottom);
+      const max = niceMax(Math.max(1, ...values));
+      const count = labels.length;
+      const xOf = (index) => (count <= 1 ? pad.left + innerW / 2 : pad.left + (innerW * index) / (count - 1));
+      const yOf = (value) => pad.top + innerH - (Math.max(0, value) / max) * innerH;
+
+      let line = '';
+      values.forEach((value, index) => {
+        line += `${index === 0 ? 'M' : 'L'}${xOf(index).toFixed(1)} ${yOf(value).toFixed(1)} `;
+      });
+      const area = count > 0
+        ? `${line}L${xOf(count - 1).toFixed(1)} ${(pad.top + innerH).toFixed(1)} L${xOf(0).toFixed(1)} ${(pad.top + innerH).toFixed(1)} Z`
+        : '';
+
+      function move(event) {
+        const point = chartPointer(event, ref.current);
+        if (!count) return;
+        const ratio = (point.x - pad.left) / Math.max(1, innerW);
+        setHover(Math.max(0, Math.min(count - 1, Math.round(ratio * (count - 1)))));
+      }
+
+      const tipIndex = hover >= 0 && hover < count ? hover : -1;
+      const tip = tipIndex >= 0
+        ? {
+          x: xOf(tipIndex),
+          y: height / 2,
+          flip: xOf(tipIndex) > width * 0.6,
+          title: labels[tipIndex],
+          rows: [{ label: props.label || '', value: formatDuration(values[tipIndex] || 0), className: 'is-work' }],
+        }
+        : null;
+
+      return h(
+        'div',
+        { className: 'td-chart', ref },
+        h(
+          'svg',
+          {
+            width: '100%',
+            height,
+            role: 'img',
+            'aria-label': props.ariaLabel || '',
+            onMouseMove: move,
+            onMouseLeave: () => setHover(-1),
+          },
+          h('title', null, props.ariaLabel || ''),
+          axisTicks(max, 2).map((tick, index) => h('g', { key: `tick-${index}` },
+            h('line', { className: 'td-chart-grid', x1: pad.left, x2: width - pad.right, y1: yOf(tick), y2: yOf(tick) }),
+            h('text', { className: 'td-chart-axis', x: pad.left - 6, y: yOf(tick) + 3, textAnchor: 'end' }, formatDuration(tick)))),
+          area ? h('path', { className: 'td-chart-area is-work', d: area }) : null,
+          line ? h('path', { className: 'td-chart-line is-work', d: line }) : null,
+          tipIndex >= 0
+            ? h('line', { className: 'td-chart-guide', x1: xOf(tipIndex), x2: xOf(tipIndex), y1: pad.top, y2: pad.top + innerH })
+            : null,
+          tipIndex >= 0
+            ? h('circle', { className: 'td-chart-point is-work', cx: xOf(tipIndex), cy: yOf(values[tipIndex] || 0), r: 3 })
+            : null,
+        ),
+        h(ChartTip, { tip }),
+      );
+    }
+
+    function donutArcs(values, cx, cy, radius, thickness) {
+      const total = values.reduce((sum, value) => sum + Math.max(0, value), 0);
+      if (!(total > 0)) return [];
+      let angle = -Math.PI / 2;
+      const arcs = [];
+      values.forEach((value, index) => {
+        const share = Math.max(0, value) / total;
+        if (share <= 0) {
+          arcs.push({ index, d: '', share });
+          return;
+        }
+        const sweep = share * Math.PI * 2;
+        const start = angle;
+        const end = angle + sweep;
+        angle = end;
+        const point = (a, r) => [cx + Math.cos(a) * r, cy + Math.sin(a) * r];
+        const outerStart = point(start, radius);
+        const outerEnd = point(end, radius);
+        const innerEnd = point(end, radius - thickness);
+        const innerStart = point(start, radius - thickness);
+        const large = sweep > Math.PI ? 1 : 0;
+        arcs.push({
+          index,
+          share,
+          d: [
+            `M${outerStart[0].toFixed(2)} ${outerStart[1].toFixed(2)}`,
+            `A${radius} ${radius} 0 ${large} 1 ${outerEnd[0].toFixed(2)} ${outerEnd[1].toFixed(2)}`,
+            `L${innerEnd[0].toFixed(2)} ${innerEnd[1].toFixed(2)}`,
+            `A${(radius - thickness)} ${(radius - thickness)} 0 ${large} 0 ${innerStart[0].toFixed(2)} ${innerStart[1].toFixed(2)}`,
+            'Z',
+          ].join(' '),
+        });
+      });
+      return arcs;
+    }
+
+    function DonutChart(props) {
+      const items = props.items || [];
+      const [hover, setHover] = React.useState(-1);
+      const size = props.size || 168;
+      const radius = size / 2 - 4;
+      const thickness = Math.max(14, Math.round(radius * 0.34));
+      const values = items.map((item) => item.value);
+      const arcs = donutArcs(values, size / 2, size / 2, radius, thickness);
+      const total = values.reduce((sum, value) => sum + value, 0);
+      const active = hover >= 0 ? items[hover] : null;
+      const centerValue = active ? active.value : total;
+
+      return h(
+        'div',
+        { className: 'td-donut' },
+        h(
+          'svg',
+          { width: size, height: size, viewBox: `0 0 ${size} ${size}`, role: 'img', 'aria-label': props.ariaLabel || '' },
+          h('title', null, props.ariaLabel || ''),
+          h('circle', {
+            className: 'td-donut-track',
+            cx: size / 2,
+            cy: size / 2,
+            r: radius - thickness / 2,
+            fill: 'none',
+            strokeWidth: thickness,
+          }),
+          arcs.map((arc) => (arc.d
+            ? h('path', {
+              key: arc.index,
+              className: `td-donut-seg ${items[arc.index].className || ''}${hover === arc.index ? ' is-hot' : ''}`,
+              d: arc.d,
+              onMouseEnter: () => setHover(arc.index),
+              onMouseLeave: () => setHover(-1),
+            })
+            : null)),
+          h('text', {
+            className: 'td-donut-value',
+            x: size / 2,
+            y: size / 2 + 1,
+            textAnchor: 'middle',
+          }, formatTokens(centerValue)),
+          h('text', {
+            className: 'td-donut-label',
+            x: size / 2,
+            y: size / 2 + 17,
+            textAnchor: 'middle',
+          }, active ? active.label : (props.centerLabel || '')),
+        ),
+        h(
+          'div',
+          { className: 'td-donut-legend' },
+          items.map((item, index) => h(
+            'button',
+            {
+              key: item.key || index,
+              type: 'button',
+              className: `td-chart-legend${hover === index ? ' is-hot' : ''}`,
+              onMouseEnter: () => setHover(index),
+              onMouseLeave: () => setHover(-1),
+            },
+            h('span', { className: `td-chart-dot ${item.className || ''}` }),
+            h('span', { className: 'td-chart-legend-label' }, item.label),
+            h('strong', null, formatTokens(item.value)),
+            h('span', { className: 'td-chart-legend-share' }, `${total ? Math.round((item.value / total) * 100) : 0}%`),
+          )),
+        ),
+      );
+    }
+
+    const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
+
+    function HeatmapChart(props) {
+      const values = props.values || [];
+      const [ref, width] = useChartWidth(props.fallbackWidth || 640);
+      const [hover, setHover] = React.useState(null);
+      const rows = 7;
+      const cols = 24;
+      const gap = 2;
+      const leftPad = 16;
+      const cell = Math.max(4, (width - leftPad - (cols - 1) * gap) / cols);
+      const height = rows * (cell + gap);
+      const max = Math.max(1, ...values);
+
+      function tipFor(row, col) {
+        const index = row * 24 + col;
+        return {
+          x: leftPad + col * (cell + gap) + cell / 2,
+          y: row * (cell + gap) + cell / 2,
+          flip: col > 16,
+          title: `${props.weekdayLabels ? props.weekdayLabels[row] : WEEKDAY_LABELS[row]} ${String(col).padStart(2, '0')}:00`,
+          rows: [{ label: props.label || '', value: props.formatValue ? props.formatValue(values[index] || 0) : String(values[index] || 0), className: 'is-read' }],
+        };
+      }
+
+      return h(
+        'div',
+        { className: 'td-chart', ref },
+        h(
+          'svg',
+          { width: '100%', height, role: 'img', 'aria-label': props.ariaLabel || '' },
+          h('title', null, props.ariaLabel || ''),
+          Array.from({ length: rows }).flatMap((_, row) => Array.from({ length: cols }).map((__, col) => {
+            const index = row * 24 + col;
+            const value = values[index] || 0;
+            const ratio = value / max;
+            return h('rect', {
+              key: `${row}-${col}`,
+              className: 'td-heat-cell',
+              x: leftPad + col * (cell + gap),
+              y: row * (cell + gap),
+              width: cell,
+              height: cell,
+              rx: 2,
+              style: { fillOpacity: value > 0 ? 0.12 + ratio * 0.88 : 0.06 },
+              onMouseEnter: () => setHover(tipFor(row, col)),
+              onMouseLeave: () => setHover(null),
+            });
+          })),
+          Array.from({ length: rows }).map((_, row) => h('text', {
+            key: `lbl-${row}`,
+            className: 'td-chart-axis',
+            x: 0,
+            y: row * (cell + gap) + cell / 2 + 3,
+            textAnchor: 'start',
+          }, WEEKDAY_LABELS[row])),
+        ),
+        h(ChartTip, { tip: hover }),
+      );
+    }
+
+    function Sparkline(props) {
+      const values = props.values || [];
+      const width = props.width || 92;
+      const height = props.height || 22;
+      if (values.length < 2) return h('div', { className: 'td-spark is-empty' });
+      const max = Math.max(1, ...values);
+      const step = width / (values.length - 1);
+      let line = '';
+      values.forEach((value, index) => {
+        line += `${index === 0 ? 'M' : 'L'}${(index * step).toFixed(1)} ${(height - 2 - (value / max) * (height - 4)).toFixed(1)} `;
+      });
+      const area = `${line}L${width} ${height} L0 ${height} Z`;
+      return h(
+        'svg',
+        { className: 'td-spark', width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': props.ariaLabel || '' },
+        h('title', null, props.ariaLabel || ''),
+        h('path', { className: 'td-spark-area', d: area }),
+        h('path', { className: 'td-spark-line', d: line }),
+      );
+    }
+
+    function GanttChart(props) {
+      const rows = props.rows || [];
+      const [ref, width] = useChartWidth(props.fallbackWidth || 640);
+      const [hover, setHover] = React.useState(null);
+      const rowHeight = 22;
+      const barHeight = 10;
+      const labelWidth = Math.min(200, Math.max(120, Math.round(width * 0.32)));
+      const trackWidth = Math.max(40, width - labelWidth - 8);
+      const times = rows.flatMap((row) => [row.start, row.end].filter((value) => value > 0));
+      const min = times.length ? Math.min(...times) : 0;
+      const max = times.length ? Math.max(...times) : 0;
+      const span = Math.max(1, max - min);
+      const height = Math.max(rowHeight, rows.length * rowHeight);
+      const xOf = (time) => labelWidth + ((time - min) / span) * trackWidth;
+
+      return h(
+        'div',
+        { className: 'td-chart', ref },
+        h(
+          'svg',
+          { width: '100%', height, role: 'img', 'aria-label': props.ariaLabel || '' },
+          h('title', null, props.ariaLabel || ''),
+          rows.map((row, index) => {
+            const y = index * rowHeight;
+            const start = xOf(row.start || min);
+            const end = Math.max(start + 2, xOf(row.end || max));
+            return h('g', {
+              key: row.id,
+              className: 'td-gantt-row',
+              onMouseEnter: () => setHover({
+                x: start,
+                y: y + rowHeight / 2,
+                flip: start > width * 0.6,
+                title: row.title,
+                rows: [
+                  { label: props.workLabel || '', value: formatDuration(row.workMs || 0), className: 'is-work' },
+                  { label: props.spanLabel || '', value: formatDuration(row.spanMs || 0), className: 'is-read' },
+                ],
+              }),
+              onMouseLeave: () => setHover(null),
+            },
+            h('text', { className: 'td-gantt-label', x: 0, y: y + rowHeight / 2 + 3, textAnchor: 'start' }, row.title),
+            h('rect', { className: 'td-gantt-track', x: labelWidth, y: y + (rowHeight - barHeight) / 2, width: trackWidth, height: barHeight, rx: 4 }),
+            h('rect', {
+              className: `td-gantt-bar ${row.className || ''}`,
+              x: start,
+              y: y + (rowHeight - barHeight) / 2,
+              width: end - start,
+              height: barHeight,
+              rx: 4,
+            }));
+          }),
+        ),
+        h(ChartTip, { tip: hover }),
+      );
+    }
+
+    function TurnBars(props) {
+      const turns = props.turns || [];
+      const [ref, width] = useChartWidth(props.fallbackWidth || 420);
+      const [hover, setHover] = React.useState(-1);
+      const height = props.height || 120;
+      const pad = { top: 8, right: 6, bottom: 16, left: 34 };
+      const innerW = Math.max(10, width - pad.left - pad.right);
+      const innerH = Math.max(10, height - pad.top - pad.bottom);
+      const count = turns.length;
+      const max = niceMax(Math.max(1, ...turns.map((turn) => turn.ms || 0)));
+      const slot = innerW / Math.max(1, count);
+      const barWidth = Math.max(3, slot - 3);
+      const yOf = (value) => pad.top + innerH - (Math.max(0, value) / max) * innerH;
+
+      return h(
+        'div',
+        { className: 'td-chart', ref },
+        h(
+          'svg',
+          { width: '100%', height, role: 'img', 'aria-label': props.ariaLabel || '' },
+          h('title', null, props.ariaLabel || ''),
+          [0, 0.5, 1].map((ratio, index) => h('g', { key: `t-${index}` },
+            h('line', { className: 'td-chart-grid', x1: pad.left, x2: width - pad.right, y1: yOf(max * ratio), y2: yOf(max * ratio) }),
+            h('text', { className: 'td-chart-axis', x: pad.left - 6, y: yOf(max * ratio) + 3, textAnchor: 'end' }, formatDuration(max * ratio)))),
+          turns.map((turn, index) => {
+            const x = pad.left + index * slot + (slot - barWidth) / 2;
+            const top = yOf(turn.ms || 0);
+            return h('rect', {
+              key: turn.n,
+              className: `td-turn-bar${turn.open ? ' is-open' : ''}${hover === index ? ' is-hot' : ''}`,
+              x,
+              y: top,
+              width: barWidth,
+              height: Math.max(2, pad.top + innerH - top),
+              rx: 2,
+              onMouseEnter: () => setHover(index),
+              onMouseLeave: () => setHover(-1),
+            });
+          }),
+          Array.from({ length: count }).map((_, index) => (count <= 10 || index % Math.ceil(count / 6) === 0
+            ? h('text', {
+              key: `x-${index}`,
+              className: 'td-chart-axis',
+              x: pad.left + index * slot + slot / 2,
+              y: height - 4,
+              textAnchor: 'middle',
+            }, `#${turns[index].n}`)
+            : null)),
+        ),
+        hover >= 0 && turns[hover]
+          ? h(ChartTip, {
+            tip: {
+              x: pad.left + hover * slot + slot / 2,
+              y: height / 2,
+              flip: hover > count * 0.6,
+              title: `#${turns[hover].n}${turns[hover].open ? ` · ${props.openLabel || ''}` : ''}`,
+              rows: [
+                { label: props.workLabel || '', value: formatDuration(turns[hover].ms || 0), className: 'is-work' },
+                { label: props.tokenLabel || '', value: formatTokens(turns[hover].tokens || 0), className: 'is-read' },
+              ],
+            },
+          })
+          : null,
+      );
+    }
+
     function TokenBar(props) {
       const tokens = props.tokens || {};
       const total = tokens.total || 0;
@@ -1583,6 +2231,8 @@ window.__ModuleLoader__.load({
       const [sort, setSort] = React.useState('tokens');
       const [range, setRange] = React.useState('all');
       const [busy, setBusy] = React.useState(false);
+      const [hidden, setHidden] = React.useState({});
+      const [ganttOpen, setGanttOpen] = React.useState(false);
 
       React.useEffect(() => {
         store.loadStats();
@@ -1595,6 +2245,7 @@ window.__ModuleLoader__.load({
 
       const now = Date.now();
       const rangeMs = range === 'all' ? 0 : Number(range) * 86_400_000;
+      const cutoffTime = rangeMs ? now - rangeMs : 0;
       const rows = state.tasks
         .filter((task) => !rangeMs || (task.updatedAt > 0 && now - task.updatedAt <= rangeMs))
         .map((task) => ({ task, stat: state.stats.byId[task.id] || null }));
@@ -1625,6 +2276,42 @@ window.__ModuleLoader__.load({
         return acc;
       }, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
 
+      // --- time series -----------------------------------------------------
+      const dayMap = new Map();
+      for (const row of rows) {
+        if (!row.stat || !Array.isArray(row.stat.daily)) continue;
+        for (const day of row.stat.daily) {
+          if (!day || typeof day.d !== 'string') continue;
+          const bucket = dayMap.get(day.d) || { d: day.d, ms: 0, turns: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+          bucket.ms += day.ms || 0;
+          bucket.turns += day.turns || 0;
+          bucket.tokens.input += day.tokens ? day.tokens.input : 0;
+          bucket.tokens.output += day.tokens ? day.tokens.output : 0;
+          bucket.tokens.cacheRead += day.tokens ? day.tokens.cacheRead : 0;
+          bucket.tokens.cacheWrite += day.tokens ? day.tokens.cacheWrite : 0;
+          dayMap.set(day.d, bucket);
+        }
+      }
+      const allDays = Array.from(dayMap.values()).sort((a, b) => (a.d < b.d ? -1 : 1));
+      const cutoffDay = cutoffTime ? new Date(cutoffTime - timezoneOffset() * 60_000).toISOString().slice(0, 10) : '';
+      const days = (cutoffDay ? allDays.filter((day) => day.d >= cutoffDay) : allDays).slice(-120);
+      const dayLabels = days.map((day) => day.d);
+      const areaSeries = [
+        { key: 'cacheRead', label: t('insights.cacheRead'), className: 'is-read', values: days.map((day) => day.tokens.cacheRead) },
+        { key: 'input', label: t('insights.input'), className: 'is-input', values: days.map((day) => day.tokens.input) },
+        { key: 'output', label: t('insights.output'), className: 'is-output', values: days.map((day) => day.tokens.output) },
+        { key: 'cacheWrite', label: t('insights.cacheWrite'), className: 'is-write', values: days.map((day) => day.tokens.cacheWrite) },
+      ].filter((series) => !hidden[series.key]);
+      const workValues = days.map((day) => day.ms);
+
+      const hourTokens = new Array(168).fill(0);
+      for (const row of rows) {
+        if (!row.stat || !row.stat.hours || !Array.isArray(row.stat.hours.tokens)) continue;
+        for (let index = 0; index < 168; index += 1) {
+          hourTokens[index] += row.stat.hours.tokens[index] || 0;
+        }
+      }
+
       const byWorkspace = new Map();
       for (const row of rows) {
         if (!row.stat) continue;
@@ -1640,10 +2327,29 @@ window.__ModuleLoader__.load({
         .slice(0, 6);
       const workspaceMax = workspaceRows.reduce((max, row) => Math.max(max, row.tokens), 0) || 1;
 
+      const ganttRows = rows
+        .filter((row) => row.stat && row.stat.firstAt > 0)
+        .sort((a, b) => (b.stat.lastAt || 0) - (a.stat.lastAt || 0))
+        .slice(0, ganttOpen ? 24 : 10)
+        .map((row) => ({
+          id: row.task.id,
+          title: row.task.title,
+          start: row.stat.firstAt || row.stat.createdAt,
+          end: row.stat.lastAt || row.stat.firstAt,
+          workMs: row.stat.workMs,
+          spanMs: row.stat.spanMs,
+          className: `is-${row.task.status}`,
+        }));
+
+      const sparkTokens = days.slice(-14).map((day) => day.tokens.cacheRead + day.tokens.input + day.tokens.output + day.tokens.cacheWrite);
+      const sparkWork = days.slice(-14).map((day) => day.ms);
+      const sparkTurns = days.slice(-14).map((day) => day.turns);
+
       const latest = rows.reduce((max, row) => Math.max(max, row.stat ? row.stat.computedAt || 0 : 0), 0);
       const failed = state.stats.status === 'error';
       const loading = state.stats.status === 'loading';
       const unmeasured = rows.length - totals.measured;
+      const hasSeries = days.length > 1;
 
       async function refresh() {
         setBusy(true);
@@ -1666,6 +2372,29 @@ window.__ModuleLoader__.load({
           label,
         );
       }
+
+      function legendButton(series) {
+        return h(
+          'button',
+          {
+            key: series.key,
+            type: 'button',
+            className: `td-ins-legend-item ${series.className}${hidden[series.key] ? ' is-off' : ''}`,
+            'aria-pressed': !hidden[series.key],
+            onClick: () => setHidden({ ...hidden, [series.key]: !hidden[series.key] }),
+          },
+          h('span', { className: 'td-ins-dot' }),
+          h('span', null, series.label),
+          h('strong', null, formatTokens(composition[series.key])),
+        );
+      }
+
+      const allSeries = [
+        { key: 'cacheRead', label: t('insights.cacheRead'), className: 'is-read' },
+        { key: 'input', label: t('insights.input'), className: 'is-input' },
+        { key: 'output', label: t('insights.output'), className: 'is-output' },
+        { key: 'cacheWrite', label: t('insights.cacheWrite'), className: 'is-write' },
+      ];
 
       return h(
         'div',
@@ -1712,32 +2441,114 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'td-ins-kpis' },
-          h('div', { className: 'td-ins-kpi' }, h('div', { className: 'td-ins-kpi-label' }, t('insights.sessions')), h('div', { className: 'td-ins-kpi-value' }, rows.length), h('div', { className: 'td-ins-kpi-hint' }, fmt(t('insights.runningHint'), { n: totals.running }))),
-          h('div', { className: 'td-ins-kpi' }, h('div', { className: 'td-ins-kpi-label' }, t('insights.totalTokens')), h('div', { className: 'td-ins-kpi-value' }, formatTokens(composition.total)), h('div', { className: 'td-ins-kpi-hint' }, fmt(t('insights.measuredHint'), { n: totals.measured }))),
-          h('div', { className: 'td-ins-kpi' }, h('div', { className: 'td-ins-kpi-label' }, t('insights.totalWork')), h('div', { className: 'td-ins-kpi-value' }, formatDuration(totals.work)), h('div', { className: 'td-ins-kpi-hint' }, t('insights.workHint'))),
-          h('div', { className: 'td-ins-kpi' }, h('div', { className: 'td-ins-kpi-label' }, t('insights.totalTurns')), h('div', { className: 'td-ins-kpi-value' }, totals.turns), h('div', { className: 'td-ins-kpi-hint' }, totals.turns ? fmt(t('insights.avgTurn'), { value: formatDuration(Math.round(totals.work / totals.turns)) }) : t('insights.noData'))),
+          h('div', { className: 'td-ins-kpi' },
+            h('div', { className: 'td-ins-kpi-label' }, t('insights.sessions')),
+            h('div', { className: 'td-ins-kpi-value' }, rows.length),
+            h('div', { className: 'td-ins-kpi-foot' },
+              h('span', { className: 'td-ins-kpi-hint' }, fmt(t('insights.runningHint'), { n: totals.running })))),
+          h('div', { className: 'td-ins-kpi' },
+            h('div', { className: 'td-ins-kpi-label' }, t('insights.totalTokens')),
+            h('div', { className: 'td-ins-kpi-value' }, formatTokens(composition.total)),
+            h('div', { className: 'td-ins-kpi-foot' },
+              h(Sparkline, { values: sparkTokens, ariaLabel: t('insights.totalTokens') }))),
+          h('div', { className: 'td-ins-kpi' },
+            h('div', { className: 'td-ins-kpi-label' }, t('insights.totalWork')),
+            h('div', { className: 'td-ins-kpi-value' }, formatDuration(totals.work)),
+            h('div', { className: 'td-ins-kpi-foot' },
+              h(Sparkline, { values: sparkWork, ariaLabel: t('insights.totalWork') }))),
+          h('div', { className: 'td-ins-kpi' },
+            h('div', { className: 'td-ins-kpi-label' }, t('insights.totalTurns')),
+            h('div', { className: 'td-ins-kpi-value' }, totals.turns),
+            h('div', { className: 'td-ins-kpi-foot' },
+              h(Sparkline, { values: sparkTurns, ariaLabel: t('insights.totalTurns') }))),
+        ),
+        h(
+          'div',
+          { className: 'td-ins-split' },
+          h(
+            'div',
+            { className: 'td-card td-ins-card' },
+            h(
+              'div',
+              { className: 'td-ins-card-head' },
+              h('div', { className: 'td-ins-card-title' }, t('insights.trend')),
+              h('div', { className: 'td-ins-legend' }, allSeries.map(legendButton)),
+            ),
+            hasSeries
+              ? h(StackedAreaChart, {
+                series: areaSeries,
+                labels: dayLabels,
+                ariaLabel: t('insights.trend'),
+                height: 200,
+              })
+              : h('div', { className: 'td-ins-empty' }, h(Icon, { name: 'clock', size: 16 }), h('span', null, t('insights.noData'))),
+            h('div', { className: 'td-ins-foot' }, t('insights.trendHint')),
+          ),
+          h(
+            'div',
+            { className: 'td-card td-ins-card' },
+            h('div', { className: 'td-ins-card-head' }, h('div', { className: 'td-ins-card-title' }, t('insights.composition'))),
+            composition.total > 0
+              ? h(DonutChart, {
+                items: allSeries.map((series) => ({ ...series, value: composition[series.key] })),
+                centerLabel: t('insights.totalShort'),
+                ariaLabel: t('insights.composition'),
+              })
+              : h('div', { className: 'td-ins-empty' }, h(Icon, { name: 'layers', size: 16 }), h('span', null, t('insights.noData'))),
+          ),
         ),
         h(
           'div',
           { className: 'td-card td-ins-card' },
-          h(
-            'div',
-            { className: 'td-ins-card-head' },
-            h('div', { className: 'td-ins-card-title' }, t('insights.composition')),
-            h('div', { className: 'td-ins-legend' },
-              [['is-read', t('insights.cacheRead'), composition.cacheRead],
-                ['is-input', t('insights.input'), composition.input],
-                ['is-output', t('insights.output'), composition.output],
-                ['is-write', t('insights.cacheWrite'), composition.cacheWrite]].map(([cls, label, value]) => h(
-                'span',
-                { key: cls, className: `td-ins-legend-item ${cls}` },
-                h('span', { className: 'td-ins-dot' }),
-                h('span', null, label),
-                h('strong', null, formatTokens(value)),
-              ))),
-          ),
-          h(TokenBar, { tokens: composition, title: t('insights.compositionHint') }),
+          h('div', { className: 'td-ins-card-head' },
+            h('div', { className: 'td-ins-card-title' }, t('insights.workTrend')),
+            h('span', { className: 'td-ins-foot' }, t('insights.workTrendHint'))),
+          hasSeries
+            ? h(LineChart, {
+              values: workValues,
+              labels: dayLabels,
+              label: t('insights.colWork'),
+              ariaLabel: t('insights.workTrend'),
+              height: 128,
+            })
+            : h('div', { className: 'td-ins-empty' }, h(Icon, { name: 'clock', size: 16 }), h('span', null, t('insights.noData'))),
         ),
+        h(
+          'div',
+          { className: 'td-card td-ins-card' },
+          h('div', { className: 'td-ins-card-head' },
+            h('div', { className: 'td-ins-card-title' }, t('insights.heatmap')),
+            h('span', { className: 'td-ins-foot' }, t('insights.heatmapHint'))),
+          totals.tokens > 0
+            ? h(HeatmapChart, {
+              values: hourTokens,
+              label: t('insights.colTokens'),
+              formatValue: formatTokens,
+              ariaLabel: t('insights.heatmap'),
+            })
+            : h('div', { className: 'td-ins-empty' }, h(Icon, { name: 'clock', size: 16 }), h('span', null, t('insights.noData'))),
+        ),
+        ganttRows.length > 0
+          ? h(
+            'div',
+            { className: 'td-card td-ins-card' },
+            h('div', { className: 'td-ins-card-head' },
+              h('div', { className: 'td-ins-card-title' }, t('insights.timeline')),
+              ganttRows.length >= 10
+                ? h('button', {
+                  type: 'button',
+                  className: 'td-ins-sort',
+                  onClick: () => setGanttOpen(!ganttOpen),
+                }, ganttOpen ? t('insights.collapse') : t('insights.expand'))
+                : null),
+            h(GanttChart, {
+              rows: ganttRows,
+              ariaLabel: t('insights.timeline'),
+              workLabel: t('insights.colWork'),
+              spanLabel: t('insights.colSpan'),
+            }),
+          )
+          : null,
         h(
           'div',
           { className: 'td-card td-ins-card' },
@@ -1817,6 +2628,7 @@ window.__ModuleLoader__.load({
           : null,
       );
     }
+
 
     function Dashboard(props) {
       const ctx = props.ctx;
@@ -2307,6 +3119,13 @@ window.__ModuleLoader__.load({
       const done = checks.filter((check) => check.done).length;
       const ready = checks.length > 0 && done === checks.length;
       const stat = state && state.stats ? state.stats.byId[task.id] || null : null;
+      const turnData = stat && Array.isArray(stat.perTurn) ? stat.perTurn : null;
+
+      // Per-turn rows are a detail-only read, so ask for them the first time this task opens.
+      React.useEffect(() => {
+        if (!stat || turnData) return;
+        store.loadTurnDetail(task.id);
+      }, [task.id, stat, turnData, store]);
       const [nextDraft, setNextDraft] = React.useState(task.nextAction || '');
       const [checkDraft, setCheckDraft] = React.useState('');
 
@@ -2488,6 +3307,29 @@ window.__ModuleLoader__.load({
               { className: 'td-section' },
               h('div', { className: 'td-section-head' }, h('div', { className: 'td-section-title' }, t('detail.description'))),
               h('div', { className: 'td-card' }, h('div', { className: 'td-description' }, task.description || t('detail.sessionDescription'))),
+            ),
+            h(
+              'section',
+              { className: 'td-section' },
+              h(
+                'div',
+                { className: 'td-section-head' },
+                h('div', { className: 'td-section-title' }, t('detail.turnDetail')),
+                h('div', { className: 'td-section-meta' }, turnData && turnData.length ? t('detail.turnDetailHint') : t('insights.noData')),
+              ),
+              h(
+                'div',
+                { className: 'td-card' },
+                turnData && turnData.length
+                  ? h(TurnBars, {
+                    turns: turnData,
+                    ariaLabel: t('detail.turnDetail'),
+                    workLabel: t('insights.colWork'),
+                    tokenLabel: t('insights.colTokens'),
+                    openLabel: t('detail.turnOpen'),
+                  })
+                  : h('div', { className: 'td-ins-empty' }, h(Icon, { name: 'clock', size: 16 }), h('span', null, t('detail.turnPending'))),
+              ),
             ),
             h(
               'section',
@@ -3991,6 +4833,73 @@ window.__ModuleLoader__.load({
       .td-ins-ws-bar { height: 6px; border-radius: 4px; background: var(--dsw-alias-bg-layer-2); overflow: hidden; }
       .td-ins-ws-bar span { display: block; height: 100%; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 72%, transparent); }
 
+      /* Charts */
+      .td-chart { position: relative; margin-top: 10px; }
+      .td-chart svg { display: block; overflow: visible; }
+      .td-chart-grid { stroke: var(--dsw-alias-border-l1); stroke-width: 1; }
+      .td-chart-axis { fill: var(--dsw-alias-label-secondary); font-size: 9.5px; }
+      .td-chart-guide { stroke: var(--dsw-alias-label-secondary); stroke-width: 1; stroke-dasharray: 3 3; opacity: .45; }
+      .td-chart-area.is-read { fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 30%, transparent); }
+      .td-chart-area.is-input { fill: color-mix(in srgb, var(--dsw-alias-label-primary) 22%, transparent); }
+      .td-chart-area.is-output { fill: color-mix(in srgb, var(--dsw-alias-state-success-primary) 34%, transparent); }
+      .td-chart-area.is-write { fill: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 34%, transparent); }
+      .td-chart-area.is-work { fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }
+      .td-chart-line.is-work { fill: none; stroke: var(--dsw-alias-brand-primary); stroke-width: 1.6; stroke-linejoin: round; }
+      .td-chart-point { fill: var(--dsw-alias-brand-primary); stroke: var(--dsw-alias-bg-layer-1); stroke-width: 1.5; }
+      .td-chart-point.is-output { fill: var(--dsw-alias-state-success-primary); }
+      .td-chart-tip {
+        position: absolute; z-index: 3; pointer-events: none; min-width: 116px;
+        padding: 7px 9px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px;
+        background: var(--dsw-alias-bg-overlay); box-shadow: 0 6px 20px rgba(0, 0, 0, .16);
+      }
+      .td-chart-tip-title { color: var(--dsw-alias-label-secondary); font-size: 9.5px; font-variant-numeric: tabular-nums; }
+      .td-chart-tip-row { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 10.5px; }
+      .td-chart-tip-label { color: var(--dsw-alias-label-secondary); }
+      .td-chart-tip-row strong { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+      .td-chart-dot { width: 7px; height: 7px; border-radius: 2px; background: var(--dsw-alias-label-secondary); flex: none; }
+      .td-chart-dot.is-read { background: var(--dsw-alias-brand-primary); }
+      .td-chart-dot.is-input { background: color-mix(in srgb, var(--dsw-alias-label-primary) 42%, transparent); }
+      .td-chart-dot.is-output { background: var(--dsw-alias-state-success-primary); }
+      .td-chart-dot.is-write { background: var(--dsw-alias-state-warn-primary); }
+      .td-chart-dot.is-work { background: var(--dsw-alias-brand-primary); }
+      .td-ins-split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; }
+      .td-ins-kpi-foot { margin-top: 6px; display: flex; justify-content: flex-end; }
+      .td-ins-foot { color: var(--dsw-alias-label-secondary); font-size: 10px; }
+      .td-ins-legend-item.is-off { opacity: .4; }
+      .td-ins-legend { flex-wrap: wrap; }
+      .td-spark { display: block; }
+      .td-spark-line { fill: none; stroke: var(--dsw-alias-brand-primary); stroke-width: 1.4; stroke-linecap: round; }
+      .td-spark-area { fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent); }
+      .td-spark.is-empty { height: 22px; }
+      .td-donut { display: flex; align-items: center; gap: 16px; margin-top: 12px; flex-wrap: wrap; }
+      .td-donut-track { stroke: var(--dsw-alias-bg-layer-2); }
+      .td-donut-seg { cursor: pointer; transition: opacity .14s ease; }
+      .td-donut-seg.is-hot { opacity: .78; }
+      .td-donut-value { fill: var(--dsw-alias-label-primary); font-size: 16px; font-weight: 620; font-variant-numeric: tabular-nums; }
+      .td-donut-label { fill: var(--dsw-alias-label-secondary); font-size: 9.5px; }
+      .td-donut-legend { display: grid; gap: 2px; flex: 1; min-width: 150px; }
+      .td-chart-legend {
+        display: flex; align-items: center; gap: 6px; width: 100%;
+        padding: 3px 2px; border: 0; border-radius: 6px; background: transparent;
+        color: var(--dsw-alias-label-secondary); font-size: 10.5px; text-align: left; cursor: pointer;
+      }
+      .td-chart-legend.is-hot { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+      .td-chart-legend strong { margin-left: auto; color: var(--dsw-alias-label-primary); font-weight: 580; font-variant-numeric: tabular-nums; }
+      .td-chart-legend-share { width: 30px; text-align: right; opacity: .65; font-variant-numeric: tabular-nums; }
+      .td-heat-cell { fill: var(--dsw-alias-brand-primary); }
+      .td-gantt-label { fill: var(--dsw-alias-label-primary); font-size: 10.5px; }
+      .td-gantt-track { fill: var(--dsw-alias-bg-layer-2); }
+      .td-gantt-bar { fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, transparent); }
+      .td-gantt-bar.is-active { fill: var(--dsw-alias-state-success-primary); }
+      .td-gantt-bar.is-waiting { fill: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 82%, transparent); }
+      .td-gantt-bar.is-blocked { fill: var(--dsw-alias-state-error-primary); }
+      .td-gantt-bar.is-review { fill: var(--dsw-alias-brand-primary); }
+      .td-gantt-bar.is-done { fill: var(--dsw-alias-state-idle-primary); }
+      .td-gantt-row { cursor: default; }
+      .td-turn-bar { fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 48%, transparent); transition: fill .12s ease; }
+      .td-turn-bar.is-open { fill: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 72%, transparent); }
+      .td-turn-bar.is-hot { fill: var(--dsw-alias-brand-primary); }
+
       /* Responsive */
       @container (max-width: 900px) {
         .td-grid { grid-template-columns: 1fr; }
@@ -4001,6 +4910,7 @@ window.__ModuleLoader__.load({
       }
       @media (max-width: 900px) {
         .td-ins-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .td-ins-split { grid-template-columns: minmax(0, 1fr); }
         .td-ins-tr { grid-template-columns: minmax(0, 1fr) 42px 66px 118px; }
         .td-ins-tr > :nth-child(4) { display: none; }
       }

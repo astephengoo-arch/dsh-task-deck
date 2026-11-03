@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-task-deck",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
   "description": "Task Deck — a personal multi-session mission control over the live DSH session catalog.",
