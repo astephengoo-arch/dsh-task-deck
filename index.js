@@ -25,27 +25,107 @@ const EMPTY_BUCKETS = () => ({
 
 /**
  * Prices are per 1M tokens in the configured currency. Cache-hit input is billed separately
- * from cache-miss input, and the off-peak window is discounted by `multiplier`.
+ * from cache-miss input; `offPeak` is the per-model multiplier applied outside peak hours.
  * Defaults are editable in the Stats page: they are illustrative, not a contract.
+ *
+ * Peak hours follow DeepSeek's published schedule: Beijing time, Monday–Friday excluding
+ * Chinese statutory holidays, 09:00–12:00 and 14:00–18:00. Everything else is off-peak.
  */
+export const DEFAULT_SCHEDULE = {
+  windows: [[540, 720], [840, 1080]],
+  weekdays: [1, 2, 3, 4, 5],
+  holidays: [
+    // 2025 statutory holidays (State Council).
+    '2025-01-01',
+    '2025-01-28', '2025-01-29', '2025-01-30', '2025-01-31', '2025-02-01', '2025-02-02', '2025-02-03', '2025-02-04',
+    '2025-04-04', '2025-04-05', '2025-04-06',
+    '2025-05-01', '2025-05-02', '2025-05-03', '2025-05-04', '2025-05-05',
+    '2025-05-31', '2025-06-01', '2025-06-02',
+    '2025-10-01', '2025-10-02', '2025-10-03', '2025-10-04', '2025-10-05', '2025-10-06', '2025-10-07', '2025-10-08',
+    // 2026 statutory holidays (verify against the State Council notice).
+    '2026-01-01', '2026-01-02', '2026-01-03',
+    '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-21', '2026-02-22',
+    '2026-04-04', '2026-04-05', '2026-04-06',
+    '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05',
+    '2026-06-19', '2026-06-20', '2026-06-21',
+    '2026-09-25', '2026-09-26', '2026-09-27',
+    '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07',
+  ],
+};
+
 export const DEFAULT_PRICING = {
   currency: 'CNY',
   unit: 1_000_000,
-  default: { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 8 },
+  default: { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 8, offPeak: 1 },
   models: {
-    'deepseek-flash': { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 3 },
+    'deepseek-flash': { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 3, offPeak: 0.5 },
   },
-  offPeak: { startMinute: 30, endMinute: 510, multiplier: 0.5 },
+  schedule: DEFAULT_SCHEDULE,
 };
 
 function priceEntry(value, fallback) {
   const source = value && typeof value === 'object' ? value : {};
   const pick = (key) => (Number.isFinite(source[key]) && source[key] >= 0 ? source[key] : fallback[key]);
+  const multiplier = Number(source.offPeak);
   return {
     input: pick('input'),
     cacheRead: pick('cacheRead'),
     cacheWrite: pick('cacheWrite'),
     output: pick('output'),
+    offPeak: Number.isFinite(multiplier) && multiplier >= 0 && multiplier <= 1 ? multiplier : fallback.offPeak,
+  };
+}
+
+const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A holiday list may name single days or `start~end` ranges. */
+export function expandHolidays(values) {
+  const days = new Set();
+  if (!Array.isArray(values)) return days;
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const text = value.trim();
+    if (DAY_KEY.test(text)) {
+      days.add(text);
+      continue;
+    }
+    const range = /^(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})$/.exec(text);
+    if (!range) continue;
+    const start = Date.parse(`${range[1]}T00:00:00Z`);
+    const end = Date.parse(`${range[2]}T00:00:00Z`);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) continue;
+    for (let cursor = start; cursor <= end && days.size < 400; cursor += DAY_MS) {
+      days.add(new Date(cursor).toISOString().slice(0, 10));
+    }
+  }
+  return days;
+}
+
+function normalizeSchedule(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const base = DEFAULT_SCHEDULE;
+  const rawWindows = Array.isArray(source.windows) ? source.windows : base.windows;
+  const windows = [];
+  for (const window of rawWindows) {
+    if (!Array.isArray(window) || window.length !== 2) continue;
+    const start = Number(window[0]);
+    const end = Number(window[1]);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+    if (start < 0 || start >= 1440 || end <= 0 || end > 1440 || end <= start) continue;
+    windows.push([Math.round(start), Math.round(end)]);
+    if (windows.length >= 8) break;
+  }
+  const rawWeekdays = Array.isArray(source.weekdays) ? source.weekdays : base.weekdays;
+  const weekdays = Array.from(new Set(rawWeekdays
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value >= 1 && value <= 7))).sort((a, b) => a - b);
+  const holidays = source.holidays === undefined
+    ? expandHolidays(base.holidays)
+    : expandHolidays(source.holidays);
+  return {
+    windows: windows.length ? windows : base.windows,
+    weekdays: weekdays.length ? weekdays : base.weekdays,
+    holidays,
   };
 }
 
@@ -62,38 +142,39 @@ export function normalizePricing(input) {
   for (const [model, entry] of Object.entries(base.models)) {
     if (!models[model]) models[model] = priceEntry(entry, base.default);
   }
-  const offPeak = source.offPeak && typeof source.offPeak === 'object' ? source.offPeak : {};
-  const minute = (value, fallback) => (Number.isFinite(value) && value >= 0 && value < 1440 ? Math.round(value) : fallback);
-  const multiplier = Number.isFinite(offPeak.multiplier) && offPeak.multiplier >= 0 && offPeak.multiplier <= 1
-    ? offPeak.multiplier
-    : base.offPeak.multiplier;
   return {
     currency: typeof source.currency === 'string' && source.currency.length <= 8 ? source.currency : base.currency,
     unit: Number.isFinite(source.unit) && source.unit > 0 ? source.unit : base.unit,
     default: priceEntry(source.default, base.default),
     models,
-    offPeak: {
-      startMinute: minute(offPeak.startMinute, base.offPeak.startMinute),
-      endMinute: minute(offPeak.endMinute, base.offPeak.endMinute),
-      multiplier,
-    },
+    schedule: normalizeSchedule(source.schedule),
   };
 }
 
-// The discount window is defined in Beijing time regardless of where the browser sits.
+// Peak hours are defined in Beijing time regardless of where the browser sits.
 const BEIJING_OFFSET_MS = 8 * 3_600_000;
 
-function beijingMinuteOfDay(time) {
+/** @returns {{ day: string, weekday: number, minute: number }} Beijing calendar facts. */
+export function beijingClock(time) {
   const shifted = new Date(time + BEIJING_OFFSET_MS);
-  return shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
+  return {
+    day: shifted.toISOString().slice(0, 10),
+    weekday: shifted.getUTCDay() === 0 ? 7 : shifted.getUTCDay(),
+    minute: shifted.getUTCHours() * 60 + shifted.getUTCMinutes(),
+  };
 }
 
-export function isOffPeak(time, offPeak) {
-  const minute = beijingMinuteOfDay(time);
-  const start = offPeak.startMinute;
-  const end = offPeak.endMinute;
-  if (start === end) return false;
-  return start < end ? minute >= start && minute < end : minute >= start || minute < end;
+/** Peak = a listed weekday that is not a holiday, inside one of the peak windows. */
+export function isPeakTime(time, schedule) {
+  if (!(time > 0)) return false;
+  const clock = beijingClock(time);
+  const holidays = schedule.holidays;
+  const isHoliday = holidays instanceof Set
+    ? holidays.has(clock.day)
+    : Array.isArray(holidays) ? holidays.includes(clock.day) : false;
+  if (isHoliday) return false;
+  if (!schedule.weekdays.includes(clock.weekday)) return false;
+  return schedule.windows.some(([start, end]) => clock.minute >= start && clock.minute < end);
 }
 
 function priceFor(pricing, model) {
@@ -101,7 +182,7 @@ function priceFor(pricing, model) {
   return pricing.default;
 }
 
-/** Money for one bucket set at one instant; the multiplier is 1 outside the off-peak window. */
+/** Money for one bucket set at one instant; peak hours pay full price, off-peak pays the model's multiplier. */
 function costOf(tokens, price, unit, multiplier) {
   const raw = (tokens.input * price.input
     + tokens.cacheRead * price.cacheRead
@@ -259,8 +340,8 @@ export function foldSessionStats(input) {
           ? source.model
           : '(unknown)';
         const price = priceFor(pricing, model);
-        const off = time > 0 && isOffPeak(time, pricing.offPeak);
-        const multiplier = off ? pricing.offPeak.multiplier : 1;
+        const peak = isPeakTime(time, pricing.schedule);
+        const multiplier = peak ? 1 : price.offPeak;
         const money = costOf(delta, price, pricing.unit, multiplier);
         const moneyByClass = {
           input: (delta.input * price.input) / pricing.unit * multiplier,
@@ -274,8 +355,8 @@ export function foldSessionStats(input) {
         cost.byClass.cacheRead += moneyByClass.cacheRead;
         cost.byClass.cacheWrite += moneyByClass.cacheWrite;
         cost.byClass.output += moneyByClass.output;
-        if (off) cost.offPeak += money;
-        else cost.peak += money;
+        if (peak) cost.peak += money;
+        else cost.offPeak += money;
 
         const modelEntry = modelBuckets.get(model) || { model, tokens: EMPTY_BUCKETS(), cost: 0 };
         modelEntry.tokens.input += delta.input;
@@ -528,6 +609,12 @@ export function createStatsResolver(ctx) {
       ok: true,
       generatedAt: Date.now(),
       tzOffset,
+      // Echo the effective billing schedule so the page shows what was actually priced.
+      schedule: {
+        windows: pricing.schedule.windows,
+        weekdays: pricing.schedule.weekdays,
+        holidays: Array.from(pricing.schedule.holidays).sort(),
+      },
       sessions,
       skipped,
     };

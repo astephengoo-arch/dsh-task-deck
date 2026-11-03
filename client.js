@@ -70,6 +70,13 @@ window.__ModuleLoader__.load({
       'insights.expand': 'Show more',
       'insights.collapse': 'Show less',
       'insights.totalShort': 'total',
+      'insights.holidaysCount': '{n} holiday days',
+      'pricing.peakDays': 'Peak weekdays',
+      'pricing.peakWindows': 'Peak hours',
+      'pricing.addWindow': 'Add hours',
+      'pricing.removeWindow': 'Remove hours',
+      'pricing.holidays': 'Holidays (one per line, or start~end)',
+      'pricing.offPeakRate': 'Off-peak rate',
       'insights.metric': 'Metric',
       'insights.metricTokens': 'Tokens',
       'insights.metricCost': 'Money',
@@ -379,6 +386,13 @@ window.__ModuleLoader__.load({
       'insights.expand': '展开更多',
       'insights.collapse': '收起',
       'insights.totalShort': '合计',
+      'insights.holidaysCount': '{n} 天节假日',
+      'pricing.peakDays': '高峰工作日',
+      'pricing.peakWindows': '高峰时段',
+      'pricing.addWindow': '加时段',
+      'pricing.removeWindow': '删除时段',
+      'pricing.holidays': '节假日（每行一个日期，或 起~止）',
+      'pricing.offPeakRate': '低谷系数',
       'insights.metric': '口径',
       'insights.metricTokens': 'Token',
       'insights.metricCost': '金额',
@@ -671,12 +685,35 @@ window.__ModuleLoader__.load({
     const PRICING_KEY = 'dsh.taskDeck.pricing.v1';
     const PRICE_FIELDS = ['input', 'cacheRead', 'cacheWrite', 'output'];
     // Illustrative defaults: the Stats page lets you replace every number with your own.
+    // Peak hours: Beijing time, Monday–Friday excluding statutory holidays, 09:00–12:00 and
+    // 14:00–18:00. DeepSeek models pay half price outside that window.
+    // Keep in sync with DEFAULT_SCHEDULE in index.js: the client sends this table with every
+    // request, so an empty list here would silently remove holidays from the pricing.
+    const DEFAULT_SCHEDULE = {
+      windows: [[540, 720], [840, 1080]],
+      weekdays: [1, 2, 3, 4, 5],
+      holidays: [
+        '2025-01-01',
+        '2025-01-28', '2025-01-29', '2025-01-30', '2025-01-31', '2025-02-01', '2025-02-02', '2025-02-03', '2025-02-04',
+        '2025-04-04', '2025-04-05', '2025-04-06',
+        '2025-05-01', '2025-05-02', '2025-05-03', '2025-05-04', '2025-05-05',
+        '2025-05-31', '2025-06-01', '2025-06-02',
+        '2025-10-01', '2025-10-02', '2025-10-03', '2025-10-04', '2025-10-05', '2025-10-06', '2025-10-07', '2025-10-08',
+        '2026-01-01', '2026-01-02', '2026-01-03',
+        '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-21', '2026-02-22',
+        '2026-04-04', '2026-04-05', '2026-04-06',
+        '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05',
+        '2026-06-19', '2026-06-20', '2026-06-21',
+        '2026-09-25', '2026-09-26', '2026-09-27',
+        '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07',
+      ],
+    };
     const DEFAULT_PRICING = {
       currency: 'CNY',
       unit: 1_000_000,
-      default: { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 8 },
-      models: { 'deepseek-flash': { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 3 } },
-      offPeak: { startMinute: 30, endMinute: 510, multiplier: 0.5 },
+      default: { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 8, offPeak: 1 },
+      models: { 'deepseek-flash': { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 3, offPeak: 0.5 } },
+      schedule: DEFAULT_SCHEDULE,
     };
     const AUTO_DONE_HOURS_OPTIONS = [0, 1, 3, 6, 12, 24, 72, 168, 336, 720];
     const DEFAULT_AUTO_DONE_HOURS = 336;
@@ -751,7 +788,37 @@ window.__ModuleLoader__.load({
         const value = Number(source[field]);
         out[field] = Number.isFinite(value) && value >= 0 ? value : fallback[field];
       }
+      const multiplier = Number(source.offPeak);
+      out.offPeak = Number.isFinite(multiplier) && multiplier >= 0 && multiplier <= 1
+        ? multiplier
+        : fallback.offPeak;
       return out;
+    }
+
+    function normalizeScheduleInput(raw) {
+      const source = raw && typeof raw === 'object' ? raw : {};
+      const windows = [];
+      const rawWindows = Array.isArray(source.windows) ? source.windows : DEFAULT_SCHEDULE.windows;
+      for (const window of rawWindows) {
+        if (!Array.isArray(window) || window.length !== 2) continue;
+        const start = Number(window[0]);
+        const end = Number(window[1]);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+        if (start < 0 || start >= 1440 || end <= 0 || end > 1440 || end <= start) continue;
+        windows.push([Math.round(start), Math.round(end)]);
+      }
+      const weekdays = Array.from(new Set((Array.isArray(source.weekdays) ? source.weekdays : DEFAULT_SCHEDULE.weekdays)
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value >= 1 && value <= 7))).sort((a, b) => a - b);
+      const holidays = (Array.isArray(source.holidays) ? source.holidays : [])
+        .filter((value) => typeof value === 'string' && value.trim() !== '')
+        .map((value) => value.trim())
+        .slice(0, 400);
+      return {
+        windows: windows.length ? windows : DEFAULT_SCHEDULE.windows,
+        weekdays: weekdays.length ? weekdays : DEFAULT_SCHEDULE.weekdays,
+        holidays,
+      };
     }
 
     function normalizePricingInput(raw) {
@@ -765,22 +832,12 @@ window.__ModuleLoader__.load({
       for (const [model, entry] of Object.entries(DEFAULT_PRICING.models)) {
         if (!models[model]) models[model] = normalizePriceEntry(entry, DEFAULT_PRICING.default);
       }
-      const offPeak = source.offPeak && typeof source.offPeak === 'object' ? source.offPeak : {};
-      const minute = (value, fallback) => {
-        const n = Number(value);
-        return Number.isFinite(n) && n >= 0 && n < 1440 ? Math.round(n) : fallback;
-      };
-      const multiplier = Number(offPeak.multiplier);
       return {
         currency: typeof source.currency === 'string' && source.currency ? source.currency.slice(0, 8) : DEFAULT_PRICING.currency,
         unit: DEFAULT_PRICING.unit,
         default: normalizePriceEntry(source.default, DEFAULT_PRICING.default),
         models,
-        offPeak: {
-          startMinute: minute(offPeak.startMinute, DEFAULT_PRICING.offPeak.startMinute),
-          endMinute: minute(offPeak.endMinute, DEFAULT_PRICING.offPeak.endMinute),
-          multiplier: Number.isFinite(multiplier) && multiplier >= 0 && multiplier <= 1 ? multiplier : DEFAULT_PRICING.offPeak.multiplier,
-        },
+        schedule: normalizeScheduleInput(source.schedule),
       };
     }
 
@@ -1145,6 +1202,7 @@ window.__ModuleLoader__.load({
       const listeners = new Set();
       let pricing = loadPricing();
       let statsById = loadStatsCache();
+      let statsSchedule = null;
       let statsStatus = 'idle';
       let statsError = '';
       let statsInflight = null;
@@ -1223,6 +1281,8 @@ window.__ModuleLoader__.load({
               })
               .then((body) => {
                 if (!body || body.ok !== true) throw new Error('bad payload');
+                // The Host echoes the billing schedule it actually priced with.
+                if (body.schedule) statsSchedule = body.schedule;
                 for (const record of body.sessions || []) collected.push(record);
               });
           });
@@ -1296,7 +1356,7 @@ window.__ModuleLoader__.load({
           phase: listSnapshot.phase || 'pending',
           annotations,
           autoDoneHours: settings.autoDoneHours,
-          stats: { byId: statsById, status: statsStatus, error: statsError },
+          stats: { byId: statsById, status: statsStatus, error: statsError, schedule: statsSchedule },
           pricing,
         };
         scheduleTitleRefresh(tasks);
@@ -2413,11 +2473,7 @@ window.__ModuleLoader__.load({
       const barWidth = Math.max(2, slot - 3);
       const yOf = (value) => pad.top + innerH - (Math.max(0, value) / max) * innerH;
       const xOfHour = (hour) => pad.left + hour * slot;
-      const start = props.windowStart || 0;
-      const end = props.windowEnd || 0;
-      const bandStart = xOfHour(start / 60);
-      const bandEnd = xOfHour(end / 60);
-      const bandWidth = end > start ? bandEnd - bandStart : innerW - (bandStart - pad.left);
+      const windows = Array.isArray(props.windows) ? props.windows : [];
 
       return h(
         'div',
@@ -2426,9 +2482,13 @@ window.__ModuleLoader__.load({
           'svg',
           { width: '100%', height, role: 'img', 'aria-label': props.ariaLabel || '' },
           h('title', null, props.ariaLabel || ''),
-          bandWidth > 0
-            ? h('rect', { className: 'td-chart-band', x: bandStart, y: pad.top, width: bandWidth, height: innerH, rx: 4 })
-            : null,
+          windows.map((window) => {
+            const x = xOfHour(window[0] / 60);
+            const width = xOfHour(window[1] / 60) - x;
+            return width > 0
+              ? h('rect', { key: `band-${window[0]}`, className: 'td-chart-band', x, y: pad.top, width, height: innerH, rx: 4 })
+              : null;
+          }),
           [0, 0.5, 1].map((ratio, index) => h('g', { key: `t-${index}` },
             h('line', { className: 'td-chart-grid', x1: pad.left, x2: width - pad.right, y1: yOf(max * ratio), y2: yOf(max * ratio) }),
             h('text', { className: 'td-chart-axis', x: pad.left - 6, y: yOf(max * ratio) + 3, textAnchor: 'end' },
@@ -2498,8 +2558,13 @@ window.__ModuleLoader__.load({
 
     function PricingEditor(props) {
       const t = props.t;
-      const [draft, setDraft] = React.useState(() => JSON.parse(JSON.stringify(props.pricing)));
+      const effective = props.schedule || (props.pricing && props.pricing.schedule) || DEFAULT_SCHEDULE;
+      const [draft, setDraft] = React.useState(() => JSON.parse(JSON.stringify({
+        ...props.pricing,
+        schedule: effective,
+      })));
       const [newModel, setNewModel] = React.useState('');
+      const [holidayText, setHolidayText] = React.useState(() => (effective.holidays || []).join('\n'));
 
       function update(patch) {
         setDraft({ ...draft, ...patch });
@@ -2510,13 +2575,36 @@ window.__ModuleLoader__.load({
         setDraft({ ...draft, models: next });
       }
 
+      function updateWindow(index, side, minute) {
+        const windows = draft.schedule.windows.map((window, cursor) => (cursor === index
+          ? (side === 0 ? [minute, window[1]] : [window[0], minute])
+          : window));
+        update({ schedule: { ...draft.schedule, windows } });
+      }
+
+      function addWindow() {
+        update({ schedule: { ...draft.schedule, windows: [...draft.schedule.windows, [1080, 1260]] } });
+      }
+
+      function removeWindow(index) {
+        const windows = draft.schedule.windows.filter((_, cursor) => cursor !== index);
+        if (!windows.length) return;
+        update({ schedule: { ...draft.schedule, windows } });
+      }
+
+      function toggleWeekday(day) {
+        const has = draft.schedule.weekdays.includes(day);
+        const weekdays = has
+          ? draft.schedule.weekdays.filter((value) => value !== day)
+          : [...draft.schedule.weekdays, day].sort((a, b) => a - b);
+        if (!weekdays.length) return;
+        update({ schedule: { ...draft.schedule, weekdays } });
+      }
+
       function addModel() {
         const name = newModel.trim();
         if (!name || draft.models[name]) return;
-        setDraft({
-          ...draft,
-          models: { ...draft.models, [name]: { ...draft.default } },
-        });
+        setDraft({ ...draft, models: { ...draft.models, [name]: { ...draft.default } } });
         setNewModel('');
       }
 
@@ -2539,6 +2627,15 @@ window.__ModuleLoader__.load({
         });
       }
 
+      function save() {
+        const holidays = holidayText
+          .split(/[\n,]/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+        props.onSave({ ...draft, schedule: { ...draft.schedule, holidays } });
+        props.onClose();
+      }
+
       return h(
         'div',
         { className: 'td-card td-price-panel' },
@@ -2555,42 +2652,68 @@ window.__ModuleLoader__.load({
               maxLength: 8,
               onChange: (event) => update({ currency: event.target.value.toUpperCase() }),
             })),
-          h('label', { className: 'td-price-field' },
-            h('span', null, t('pricing.offPeak')),
+          h('div', { className: 'td-price-field td-price-weekdays' },
+            h('span', null, t('pricing.peakDays')),
+            h('div', { className: 'td-price-chips' }, WEEKDAY_LABELS.map((label, index) => h(
+              'button',
+              {
+                key: label,
+                type: 'button',
+                className: 'td-price-chip',
+                'aria-pressed': draft.schedule.weekdays.includes(index + 1),
+                onClick: () => toggleWeekday(index + 1),
+              },
+              label,
+            ))))),
+        h('div', { className: 'td-price-field td-price-windows' },
+          h('span', null, t('pricing.peakWindows')),
+          h('div', { className: 'td-price-windows-list' }, draft.schedule.windows.map((window, index) => h(
+            'div',
+            { key: index, className: 'td-price-window' },
             h('input', {
               type: 'time',
               className: 'td-price-input',
-              value: formatMinuteOfDay(draft.offPeak.startMinute),
-              onChange: (event) => update({
-                offPeak: { ...draft.offPeak, startMinute: parseMinuteOfDay(event.target.value, draft.offPeak.startMinute) },
-              }),
-            })),
-          h('label', { className: 'td-price-field' },
-            h('span', null, t('pricing.until')),
+              value: formatMinuteOfDay(window[0]),
+              onChange: (event) => updateWindow(index, 0, parseMinuteOfDay(event.target.value, window[0])),
+            }),
+            h('span', { className: 'td-price-dash' }, '–'),
             h('input', {
               type: 'time',
               className: 'td-price-input',
-              value: formatMinuteOfDay(draft.offPeak.endMinute),
-              onChange: (event) => update({
-                offPeak: { ...draft.offPeak, endMinute: parseMinuteOfDay(event.target.value, draft.offPeak.endMinute) },
-              }),
-            })),
-          h('label', { className: 'td-price-field' },
-            h('span', null, t('pricing.discount')),
-            numberField(draft.offPeak.multiplier, (value) => update({
-              offPeak: { ...draft.offPeak, multiplier: Math.max(0, Math.min(1, value)) },
-            }), 0.05)),
-        ),
+              value: formatMinuteOfDay(window[1]),
+              onChange: (event) => updateWindow(index, 1, parseMinuteOfDay(event.target.value, window[1])),
+            }),
+            draft.schedule.windows.length > 1
+              ? h('button', {
+                type: 'button',
+                className: 'td-price-remove',
+                'aria-label': t('pricing.removeWindow'),
+                onClick: () => removeWindow(index),
+              }, '×')
+              : null,
+          )),
+          h('button', { type: 'button', className: 'td-btn td-btn-sm', onClick: addWindow }, t('pricing.addWindow')))),
+        h('label', { className: 'td-price-field td-price-holidays' },
+          h('span', null, t('pricing.holidays')),
+          h('textarea', {
+            className: 'td-price-input td-price-textarea',
+            rows: 3,
+            value: holidayText,
+            placeholder: '2026-10-01\n2026-02-16~2026-02-22',
+            onChange: (event) => setHolidayText(event.target.value),
+          })),
         h('div', { className: 'td-price-head' },
           h('span', null, t('pricing.model')),
           h('span', null, t('insights.input')),
           h('span', null, t('insights.cacheRead')),
           h('span', null, t('insights.cacheWrite')),
           h('span', null, t('insights.output')),
+          h('span', null, t('pricing.offPeakRate')),
           h('span', null, '')),
         Object.keys(draft.models).map((model) => h('div', { key: model, className: 'td-price-head td-price-model' },
           h('span', { className: 'td-price-name', title: model }, model),
           PRICE_FIELDS.map((field) => numberField(draft.models[model][field], (value) => updateModel(model, field, value), 0.1, { key: field })),
+          numberField(draft.models[model].offPeak, (value) => updateModel(model, 'offPeak', Math.max(0, Math.min(1, value))), 0.05, { key: 'offPeak' }),
           h('button', {
             type: 'button',
             className: 'td-price-remove',
@@ -2617,7 +2740,7 @@ window.__ModuleLoader__.load({
           h('button', {
             type: 'button',
             className: 'td-btn td-btn-primary td-btn-sm',
-            onClick: () => { props.onSave(draft); props.onClose(); },
+            onClick: save,
           }, t('pricing.save')),
         ),
       );
@@ -2635,7 +2758,13 @@ window.__ModuleLoader__.load({
       const [metric, setMetric] = React.useState('tokens');
       const [priceOpen, setPriceOpen] = React.useState(false);
       const pricing = state.pricing || DEFAULT_PRICING;
+      const schedule = (state.stats && state.stats.schedule) || pricing.schedule || DEFAULT_SCHEDULE;
       const priceMode = metric === 'cost';
+      const scheduleSummary = [
+        (schedule.windows || []).map((window) => `${formatMinuteOfDay(window[0])}–${formatMinuteOfDay(window[1])}`).join(' / '),
+        (schedule.weekdays || []).map((day) => WEEKDAY_LABELS[day - 1]).join(''),
+        fmt(t('insights.holidaysCount'), { n: (schedule.holidays || []).length }),
+      ].filter(Boolean).join(' · ');
 
       React.useEffect(() => {
         store.loadStats();
@@ -2908,6 +3037,7 @@ window.__ModuleLoader__.load({
           ? h(PricingEditor, {
             t,
             pricing,
+            schedule,
             onSave: (next) => store.setPricing(next),
             onReset: () => store.resetPricing(),
             onClose: () => setPriceOpen(false),
@@ -2948,8 +3078,7 @@ window.__ModuleLoader__.load({
           { className: 'td-card td-ins-card' },
           h('div', { className: 'td-ins-card-head' },
             h('div', { className: 'td-ins-card-title' }, t('insights.peak')),
-            h('span', { className: 'td-ins-foot' },
-              `${t('insights.offPeakWindow')} ${formatMinuteOfDay(pricing.offPeak.startMinute)}–${formatMinuteOfDay(pricing.offPeak.endMinute)} · ${Math.round(pricing.offPeak.multiplier * 100)}%`)),
+            h('span', { className: 'td-ins-foot' }, scheduleSummary)),
           h('div', { className: 'td-ins-peaks' },
             h('div', { className: 'td-ins-peak-item is-peak' },
               h('span', { className: 'td-ins-peak-label' }, t('insights.peakHours')),
@@ -2961,8 +3090,7 @@ window.__ModuleLoader__.load({
               h('span', { className: 'td-ins-peak-share' }, totals.cost > 0 ? `${Math.round((totals.offPeak / totals.cost) * 100)}%` : '—'))),
           h(HourCostBars, {
             values: hourOfDayCost,
-            windowStart: pricing.offPeak.startMinute,
-            windowEnd: pricing.offPeak.endMinute,
+            windows: schedule.windows,
             label: t('insights.colCost'),
             formatValue: (value) => formatMoneyAxis(value, pricing.currency),
             ariaLabel: t('insights.peakChart'),
@@ -5465,7 +5593,7 @@ window.__ModuleLoader__.load({
       }
       .td-price-input:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
       .td-price-head {
-        display: grid; grid-template-columns: minmax(90px, 1fr) repeat(4, 96px) 26px;
+        display: grid; grid-template-columns: minmax(90px, 1fr) repeat(5, 88px) 26px;
         align-items: center; gap: 8px; margin-top: 8px;
         color: var(--dsw-alias-label-secondary); font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
       }
@@ -5477,6 +5605,23 @@ window.__ModuleLoader__.load({
       }
       .td-price-remove:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-state-error-primary); }
       .td-price-remove:disabled { opacity: .25; cursor: default; }
+      .td-price-weekdays { min-width: 200px; }
+      .td-price-chips { display: flex; gap: 3px; }
+      .td-price-chip {
+        width: 24px; height: 24px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px;
+        background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-secondary);
+        font-size: 10.5px; cursor: pointer;
+      }
+      .td-price-chip[aria-pressed='true'] { background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-bg-base); border-color: transparent; }
+      .td-price-windows { flex: 1 1 100%; }
+      .td-price-windows-list { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .td-price-window { display: flex; align-items: center; gap: 4px; }
+      .td-price-dash { color: var(--dsw-alias-label-secondary); }
+      .td-price-holidays { flex: 1 1 100%; }
+      .td-price-textarea {
+        width: 100%; height: auto; min-height: 54px; padding: 6px 7px;
+        font-family: inherit; line-height: 1.5; resize: vertical;
+      }
 
       /* Responsive */
       @container (max-width: 900px) {
@@ -5519,7 +5664,7 @@ window.__ModuleLoader__.load({
       @media (max-width: 520px) {
         .td-inner, .td-detail { padding-left: 14px; padding-right: 14px; }
         .td-ins-kpis { grid-template-columns: minmax(0, 1fr); }
-        .td-price-head { grid-template-columns: minmax(56px, 1fr) repeat(4, 58px) 20px; gap: 5px; }
+        .td-price-head { grid-template-columns: minmax(48px, 1fr) repeat(5, 48px) 18px; gap: 4px; }
         .td-price-head .td-price-input { width: 100%; }
         .td-price-row .td-price-input { width: 100%; }
         .td-ins-tr { grid-template-columns: minmax(0, 1fr) 62px 100px; }

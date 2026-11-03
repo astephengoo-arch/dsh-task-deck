@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { apply as applyHost, createStatsResolver, DEFAULT_PRICING, foldSessionStats, isOffPeak, normalizePricing, STATS_PATH } from '../index.js';
+import { apply as applyHost, beijingClock, createStatsResolver, DEFAULT_PRICING, DEFAULT_SCHEDULE, expandHolidays, foldSessionStats, isPeakTime, normalizePricing, STATS_PATH } from '../index.js';
 
 function turn(n, start, end) {
   return [
@@ -321,13 +321,28 @@ test('cost prices cache hits, input and output separately', () => {
   assert.ok(Math.abs(peak.cost.total - expected) < 1e-9);
 });
 
-test('cost splits by model and the off-peak flag follows the Beijing window', () => {
-  // 00:30–08:30 Beijing is discounted: 08:29 still is, 08:30 is not.
-  assert.equal(isOffPeak(Date.UTC(2026, 10, 2, 0, 29), DEFAULT_PRICING.offPeak), true);
-  assert.equal(isOffPeak(Date.UTC(2026, 10, 2, 0, 30), DEFAULT_PRICING.offPeak), false);
-  assert.equal(isOffPeak(Date.UTC(2026, 10, 2, 16, 29), DEFAULT_PRICING.offPeak), false);
-  assert.equal(isOffPeak(Date.UTC(2026, 10, 2, 16, 30), DEFAULT_PRICING.offPeak), true);
+test('peak hours follow the Beijing weekday schedule and skip holidays', () => {
+  const at = (utcHour, utcMinute, day) => Date.UTC(2026, 10, day, utcHour, utcMinute);
+  // 2026-11-02 is a Monday: 09:00–12:00 and 14:00–18:00 Beijing are peak.
+  assert.equal(isPeakTime(at(1, 0, 2), DEFAULT_SCHEDULE), true);    // 09:00
+  assert.equal(isPeakTime(at(0, 59, 2), DEFAULT_SCHEDULE), false);  // 08:59
+  assert.equal(isPeakTime(at(4, 0, 2), DEFAULT_SCHEDULE), false);   // 12:00 exclusive
+  assert.equal(isPeakTime(at(5, 59, 2), DEFAULT_SCHEDULE), false);  // 13:59 lunch
+  assert.equal(isPeakTime(at(6, 0, 2), DEFAULT_SCHEDULE), true);    // 14:00
+  assert.equal(isPeakTime(at(10, 0, 2), DEFAULT_SCHEDULE), false);  // 18:00 exclusive
+  // Saturday 2026-11-07 at 10:00 Beijing is off-peak.
+  assert.equal(isPeakTime(at(2, 0, 7), DEFAULT_SCHEDULE), false);
+  // National Day 2026-10-01 (Thursday) is a holiday even at 10:00 Beijing.
+  assert.equal(isPeakTime(Date.UTC(2026, 9, 1, 2, 0), DEFAULT_SCHEDULE), false);
+  // A custom holiday list removes a normal weekday.
+  const custom = normalizePricing({ schedule: { holidays: ['2026-11-03'] } });
+  assert.equal(isPeakTime(at(2, 0, 3), custom.schedule), false);
+  assert.equal(isPeakTime(at(2, 0, 4), custom.schedule), true);
+  // Range syntax expands.
+  assert.equal(expandHolidays(['2026-02-16~2026-02-18']).size, 3);
+});
 
+test('cost splits by model and buckets money into days and hours', () => {
   const events = [
     { type: 'turn/start', seq: 1, time: T1, data: { turn: 1 } },
     { type: 'assistant/message', seq: 2, time: T1 + 1000, data: { usage: { inputTokens: 10, outputTokens: 10 }, message: { source: { kind: 'model', provider: 'o', model: 'gpt-6.1-sol' } } } },
@@ -344,12 +359,12 @@ test('cost splits by model and the off-peak flag follows the Beijing window', ()
 test('a caller price table overrides the defaults and survives partial input', () => {
   const custom = normalizePricing({
     currency: 'USD',
-    models: { 'deepseek-flash': { input: 100, cacheRead: 0, output: 0 } },
-    offPeak: { multiplier: 1 },
+    models: { 'deepseek-flash': { input: 100, cacheRead: 0, output: 0, offPeak: 1 } },
   });
   assert.equal(custom.currency, 'USD');
   assert.equal(custom.models['deepseek-flash'].input, 100);
   assert.equal(custom.models['deepseek-flash'].output, 0);
+  assert.equal(custom.models['deepseek-flash'].offPeak, 1);
   assert.equal(custom.default.input, DEFAULT_PRICING.default.input);
 
   const events = [
@@ -359,4 +374,22 @@ test('a caller price table overrides the defaults and survives partial input', (
   ];
   const stats = foldSessionStats({ header: { createdAt: T1 }, events, now: T1 + 14 * 3_600_000 + 20, pricing: custom });
   assert.ok(Math.abs(stats.cost.total - 100) < 1e-9);
+});
+
+test('off-peak pays half the peak price for DeepSeek models', () => {
+  const peakTime = Date.UTC(2026, 10, 2, 2, 0);   // Monday 10:00 Beijing
+  const offTime = Date.UTC(2026, 10, 2, 13, 0);   // Monday 21:00 Beijing
+  const build = (time) => ([
+    { type: 'turn/start', seq: 1, time, data: { turn: 1 } },
+    { type: 'assistant/message', seq: 2, time: time + 1000, data: { usage: { inputTokens: 1_000_000 }, message: { source: { model: 'deepseek-flash' } } } },
+    { type: 'turn/end', seq: 3, time: time + 2000, data: { turn: 1 } },
+  ]);
+
+  const peak = foldSessionStats({ header: { createdAt: peakTime }, events: build(peakTime), now: peakTime + 2000 });
+  const off = foldSessionStats({ header: { createdAt: offTime }, events: build(offTime), now: offTime + 2000 });
+  assert.equal(peak.cost.peak > 0, true);
+  assert.equal(peak.cost.offPeak, 0);
+  assert.equal(off.cost.peak, 0);
+  assert.ok(Math.abs(off.cost.total - peak.cost.total / 2) < 1e-9);
+  assert.equal(beijingClock(peakTime).weekday, 1);
 });

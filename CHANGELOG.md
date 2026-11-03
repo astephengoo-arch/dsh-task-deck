@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.0
+
+- Replaced the single discount window with DeepSeek's published peak schedule: Beijing time, Monday–Friday excluding Chinese statutory holidays, **09:00–12:00 and 14:00–18:00** are peak; everything else — nights, weekends, and whole holiday days — is off-peak.
+- Off-peak pricing is now **per model** ("DeepSeek series pay half"): each model row carries its own multiplier, defaulting to 0.5 for `deepseek-flash` and 1.0 (no discount) for anything else.
+- The price editor edits the schedule instead of one window: weekday toggles, any number of peak windows, and a holiday list (`2026-10-01` or `2026-02-16~2026-02-22`). Shipped defaults cover 2025–2026 statutory holidays.
+- The Host echoes the effective schedule in every response; the page shows it in the peak card and seeds the editor from it, so what is displayed is what was actually priced.
+- The 24-hour spend histogram now shades every peak window instead of a single band.
+
 ## 1.4.0
 
 - New money dimension: every token class is priced separately (cache-hit input, cache-miss input, cache-write, output), so cost is not a single blended rate.
