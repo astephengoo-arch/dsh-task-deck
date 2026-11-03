@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { apply as applyHost, createStatsResolver, foldSessionStats, STATS_PATH } from '../index.js';
+import { apply as applyHost, createStatsResolver, DEFAULT_PRICING, foldSessionStats, isOffPeak, normalizePricing, STATS_PATH } from '../index.js';
 
 function turn(n, start, end) {
   return [
@@ -290,4 +290,73 @@ test('the resolver honours tz and detail options', async () => {
 
   const detail = await resolver.resolve(['a'], { tzOffset: -480, detail: true });
   assert.equal(detail.sessions[0].perTurn.length, 1);
+});
+
+const models = (value) => ({ type: 'assistant/message', seq: 2, time: value, data: { usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 1000 }, message: { source: { kind: 'model', provider: 'deepseek', model: 'deepseek-flash' } } } });
+
+test('cost prices cache hits, input and output separately', () => {
+  const events = [
+    { type: 'turn/start', seq: 1, time: T1, data: { turn: 1 } },
+    models(T1 + 1000),
+    { type: 'turn/end', seq: 3, time: T1 + 2000, data: { turn: 1 } },
+  ];
+  // 16:30Z is 00:30 in Beijing — inside the default off-peak window, so the multiplier applies.
+  const off = foldSessionStats({ header: { createdAt: T1 }, events, now: T1 + 2000 });
+  assert.equal(off.cost.offPeak > 0, true);
+  assert.equal(off.cost.peak, 0);
+  assert.equal(off.cost.currency, 'CNY');
+
+  // 06:30Z is 14:30 Beijing — full price.
+  const peakEvents = [
+    { type: 'turn/start', seq: 1, time: T1 + 14 * 3_600_000, data: { turn: 1 } },
+    models(T1 + 14 * 3_600_000 + 1000),
+    { type: 'turn/end', seq: 3, time: T1 + 14 * 3_600_000 + 2000, data: { turn: 1 } },
+  ];
+  const peak = foldSessionStats({ header: { createdAt: T1 }, events: peakEvents, now: T1 + 14 * 3_600_000 + 2000 });
+  assert.equal(peak.cost.peak > 0, true);
+  assert.equal(peak.cost.offPeak, 0);
+  assert.ok(peak.cost.total > off.cost.total);
+  // deepseek-flash: input 2, cacheRead 0.2, output 3 per 1M.
+  const expected = (100 * 2 + 1000 * 0.2 + 50 * 3) / 1_000_000;
+  assert.ok(Math.abs(peak.cost.total - expected) < 1e-9);
+});
+
+test('cost splits by model and the off-peak flag follows the Beijing window', () => {
+  // 00:30–08:30 Beijing is discounted: 08:29 still is, 08:30 is not.
+  assert.equal(isOffPeak(Date.UTC(2026, 10, 2, 0, 29), DEFAULT_PRICING.offPeak), true);
+  assert.equal(isOffPeak(Date.UTC(2026, 10, 2, 0, 30), DEFAULT_PRICING.offPeak), false);
+  assert.equal(isOffPeak(Date.UTC(2026, 10, 2, 16, 29), DEFAULT_PRICING.offPeak), false);
+  assert.equal(isOffPeak(Date.UTC(2026, 10, 2, 16, 30), DEFAULT_PRICING.offPeak), true);
+
+  const events = [
+    { type: 'turn/start', seq: 1, time: T1, data: { turn: 1 } },
+    { type: 'assistant/message', seq: 2, time: T1 + 1000, data: { usage: { inputTokens: 10, outputTokens: 10 }, message: { source: { kind: 'model', provider: 'o', model: 'gpt-6.1-sol' } } } },
+    { type: 'turn/end', seq: 3, time: T1 + 2000, data: { turn: 1 } },
+  ];
+  const stats = foldSessionStats({ header: { createdAt: T1 }, events, now: T1 + 2000 });
+  assert.equal(stats.models.length, 1);
+  assert.equal(stats.models[0].model, 'gpt-6.1-sol');
+  assert.ok(stats.models[0].cost > 0);
+  assert.equal(stats.daily[0].cost > 0, true);
+  assert.equal(stats.hours.cost.reduce((sum, value) => sum + value, 0) > 0, true);
+});
+
+test('a caller price table overrides the defaults and survives partial input', () => {
+  const custom = normalizePricing({
+    currency: 'USD',
+    models: { 'deepseek-flash': { input: 100, cacheRead: 0, output: 0 } },
+    offPeak: { multiplier: 1 },
+  });
+  assert.equal(custom.currency, 'USD');
+  assert.equal(custom.models['deepseek-flash'].input, 100);
+  assert.equal(custom.models['deepseek-flash'].output, 0);
+  assert.equal(custom.default.input, DEFAULT_PRICING.default.input);
+
+  const events = [
+    { type: 'turn/start', seq: 1, time: T1 + 14 * 3_600_000, data: { turn: 1 } },
+    { type: 'assistant/message', seq: 2, time: T1 + 14 * 3_600_000 + 10, data: { usage: { inputTokens: 1_000_000 }, message: { source: { model: 'deepseek-flash' } } } },
+    { type: 'turn/end', seq: 3, time: T1 + 14 * 3_600_000 + 20, data: { turn: 1 } },
+  ];
+  const stats = foldSessionStats({ header: { createdAt: T1 }, events, now: T1 + 14 * 3_600_000 + 20, pricing: custom });
+  assert.ok(Math.abs(stats.cost.total - 100) < 1e-9);
 });

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.0
+
+- New money dimension: every token class is priced separately (cache-hit input, cache-miss input, cache-write, output), so cost is not a single blended rate.
+- Peak and off-peak are priced differently. The discount window defaults to 00:30–08:30 Beijing time with a 0.5 multiplier, and both the window and the multiplier are editable.
+- Editable price table in the Stats page (`dsh.taskDeck.pricing.v1`): currency, per-model rates, add/remove models, reset to defaults. The Host merges the table over its defaults and caches per price version.
+- Stats gained a spend KPI, a peak/off-peak card with a 24-hour spend histogram (discount window shaded), a Token/Money metric switch that drives the trend, donut and heatmap, a cost column plus cost sort in the table, per-turn cost, and a spend row on Task Detail.
+- Default rates are explicitly illustrative and can be replaced in one click.
+
 ## 1.3.0
 
 - Richer charts on the Stats page, all hand-drawn SVG (no new dependency, no external request):

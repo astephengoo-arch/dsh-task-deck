@@ -23,6 +23,93 @@ const EMPTY_BUCKETS = () => ({
   cacheWrite: 0,
 });
 
+/**
+ * Prices are per 1M tokens in the configured currency. Cache-hit input is billed separately
+ * from cache-miss input, and the off-peak window is discounted by `multiplier`.
+ * Defaults are editable in the Stats page: they are illustrative, not a contract.
+ */
+export const DEFAULT_PRICING = {
+  currency: 'CNY',
+  unit: 1_000_000,
+  default: { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 8 },
+  models: {
+    'deepseek-flash': { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 3 },
+  },
+  offPeak: { startMinute: 30, endMinute: 510, multiplier: 0.5 },
+};
+
+function priceEntry(value, fallback) {
+  const source = value && typeof value === 'object' ? value : {};
+  const pick = (key) => (Number.isFinite(source[key]) && source[key] >= 0 ? source[key] : fallback[key]);
+  return {
+    input: pick('input'),
+    cacheRead: pick('cacheRead'),
+    cacheWrite: pick('cacheWrite'),
+    output: pick('output'),
+  };
+}
+
+/** Merge a caller-supplied table over the defaults, so a partial edit never yields NaN. */
+export function normalizePricing(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const base = DEFAULT_PRICING;
+  const models = {};
+  const rows = source.models && typeof source.models === 'object' ? source.models : {};
+  for (const [model, entry] of Object.entries(rows)) {
+    if (typeof model !== 'string' || model === '' || model.length > 120) continue;
+    models[model] = priceEntry(entry, base.default);
+  }
+  for (const [model, entry] of Object.entries(base.models)) {
+    if (!models[model]) models[model] = priceEntry(entry, base.default);
+  }
+  const offPeak = source.offPeak && typeof source.offPeak === 'object' ? source.offPeak : {};
+  const minute = (value, fallback) => (Number.isFinite(value) && value >= 0 && value < 1440 ? Math.round(value) : fallback);
+  const multiplier = Number.isFinite(offPeak.multiplier) && offPeak.multiplier >= 0 && offPeak.multiplier <= 1
+    ? offPeak.multiplier
+    : base.offPeak.multiplier;
+  return {
+    currency: typeof source.currency === 'string' && source.currency.length <= 8 ? source.currency : base.currency,
+    unit: Number.isFinite(source.unit) && source.unit > 0 ? source.unit : base.unit,
+    default: priceEntry(source.default, base.default),
+    models,
+    offPeak: {
+      startMinute: minute(offPeak.startMinute, base.offPeak.startMinute),
+      endMinute: minute(offPeak.endMinute, base.offPeak.endMinute),
+      multiplier,
+    },
+  };
+}
+
+// The discount window is defined in Beijing time regardless of where the browser sits.
+const BEIJING_OFFSET_MS = 8 * 3_600_000;
+
+function beijingMinuteOfDay(time) {
+  const shifted = new Date(time + BEIJING_OFFSET_MS);
+  return shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
+}
+
+export function isOffPeak(time, offPeak) {
+  const minute = beijingMinuteOfDay(time);
+  const start = offPeak.startMinute;
+  const end = offPeak.endMinute;
+  if (start === end) return false;
+  return start < end ? minute >= start && minute < end : minute >= start || minute < end;
+}
+
+function priceFor(pricing, model) {
+  if (pricing.models[model]) return pricing.models[model];
+  return pricing.default;
+}
+
+/** Money for one bucket set at one instant; the multiplier is 1 outside the off-peak window. */
+function costOf(tokens, price, unit, multiplier) {
+  const raw = (tokens.input * price.input
+    + tokens.cacheRead * price.cacheRead
+    + tokens.cacheWrite * price.cacheWrite
+    + tokens.output * price.output) / unit;
+  return raw * multiplier;
+}
+
 function isLoopback(address) {
   if (!address) return false;
   const value = String(address);
@@ -57,7 +144,14 @@ function dayBucket(map, time, tzOffset) {
   const key = dayKey(time, tzOffset);
   let bucket = map.get(key);
   if (!bucket) {
-    bucket = { d: key, ms: 0, turns: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    bucket = {
+      d: key,
+      ms: 0,
+      turns: 0,
+      cost: 0,
+      costByClass: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    };
     map.set(key, bucket);
   }
   return bucket;
@@ -70,13 +164,15 @@ function dayBucket(map, time, tzOffset) {
  * of that prefix's turns or tokens belong to the child's own task.
  *
  * @param {{ header?: { createdAt?: number }, events?: readonly unknown[], inheritedEventCount?: number,
- *   now?: number, tzOffset?: number, detail?: boolean }} input
+ *   now?: number, tzOffset?: number, detail?: boolean, pricing?: object }} input
  * @returns {{ createdAt: number, firstAt: number, lastAt: number, spanMs: number, workMs: number,
  *   turns: number, steps: number, inheritedEvents: number, tzOffset: number,
  *   tokens: { input: number, output: number, cacheRead: number, cacheWrite: number, total: number },
- *   daily: Array<{ d: string, ms: number, turns: number, tokens: object }>,
- *   hours: { tokens: number[], turns: number[] },
- *   perTurn?: Array<{ n: number, start: number, ms: number, tokens: number, open?: true }> }}
+ *   daily: Array<{ d: string, ms: number, turns: number, tokens: object, cost: number }>,
+ *   hours: { tokens: number[], turns: number[], cost: number[] },
+ *   cost: { total: number, peak: number, offPeak: number, byClass: object, currency: string },
+ *   models: Array<{ model: string, tokens: object, cost: number }>,
+ *   perTurn?: Array<{ n: number, start: number, ms: number, tokens: number, cost: number, open?: true }> }}
  */
 export function foldSessionStats(input) {
   const header = (input && input.header) || {};
@@ -87,6 +183,7 @@ export function foldSessionStats(input) {
     ? input.tzOffset
     : 0;
   const detail = !!(input && input.detail);
+  const pricing = normalizePricing(input && input.pricing);
 
   const createdAt = typeof header.createdAt === 'number' ? header.createdAt : 0;
   const tokens = EMPTY_BUCKETS();
@@ -108,7 +205,10 @@ export function foldSessionStats(input) {
   const days = new Map();
   const hourTokens = new Array(168).fill(0);
   const hourTurns = new Array(168).fill(0);
+  const hourCost = new Array(168).fill(0);
   const perTurn = [];
+  const modelBuckets = new Map();
+  const cost = { total: 0, peak: 0, offPeak: 0, byClass: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 } };
   let currentTurn = null;
 
   for (const event of own) {
@@ -125,7 +225,7 @@ export function foldSessionStats(input) {
         dayBucket(days, time, tzOffset).turns += 1;
         hourTurns[hourIndex(time, tzOffset)] += 1;
       }
-      if (detail) currentTurn = { n: turns, start: time, ms: 0, tokens: 0 };
+      if (detail) currentTurn = { n: turns, start: time, ms: 0, tokens: 0, cost: 0 };
     } else if (event.type === 'turn/end') {
       if (openTurnStart > 0 && time >= openTurnStart) {
         const spent = time - openTurnStart;
@@ -153,16 +253,56 @@ export function foldSessionStats(input) {
         tokens.output += delta.output;
         tokens.cacheRead += delta.cacheRead;
         tokens.cacheWrite += delta.cacheWrite;
+        // Which model spent it, and whether this instant sits in the discounted window.
+        const source = data.message && data.message.source;
+        const model = source && typeof source.model === 'string' && source.model !== ''
+          ? source.model
+          : '(unknown)';
+        const price = priceFor(pricing, model);
+        const off = time > 0 && isOffPeak(time, pricing.offPeak);
+        const multiplier = off ? pricing.offPeak.multiplier : 1;
+        const money = costOf(delta, price, pricing.unit, multiplier);
+        const moneyByClass = {
+          input: (delta.input * price.input) / pricing.unit * multiplier,
+          cacheRead: (delta.cacheRead * price.cacheRead) / pricing.unit * multiplier,
+          cacheWrite: (delta.cacheWrite * price.cacheWrite) / pricing.unit * multiplier,
+          output: (delta.output * price.output) / pricing.unit * multiplier,
+        };
+
+        cost.total += money;
+        cost.byClass.input += moneyByClass.input;
+        cost.byClass.cacheRead += moneyByClass.cacheRead;
+        cost.byClass.cacheWrite += moneyByClass.cacheWrite;
+        cost.byClass.output += moneyByClass.output;
+        if (off) cost.offPeak += money;
+        else cost.peak += money;
+
+        const modelEntry = modelBuckets.get(model) || { model, tokens: EMPTY_BUCKETS(), cost: 0 };
+        modelEntry.tokens.input += delta.input;
+        modelEntry.tokens.cacheRead += delta.cacheRead;
+        modelEntry.tokens.cacheWrite += delta.cacheWrite;
+        modelEntry.tokens.output += delta.output;
+        modelEntry.cost += money;
+        modelBuckets.set(model, modelEntry);
+
         if (time > 0) {
           const bucket = dayBucket(days, time, tzOffset);
           bucket.tokens.input += delta.input;
           bucket.tokens.output += delta.output;
           bucket.tokens.cacheRead += delta.cacheRead;
           bucket.tokens.cacheWrite += delta.cacheWrite;
-          hourTokens[hourIndex(time, tzOffset)] += delta.input + delta.output + delta.cacheRead + delta.cacheWrite;
+          bucket.cost += money;
+          bucket.costByClass.input += moneyByClass.input;
+          bucket.costByClass.cacheRead += moneyByClass.cacheRead;
+          bucket.costByClass.cacheWrite += moneyByClass.cacheWrite;
+          bucket.costByClass.output += moneyByClass.output;
+          const cell = hourIndex(time, tzOffset);
+          hourTokens[cell] += delta.input + delta.output + delta.cacheRead + delta.cacheWrite;
+          hourCost[cell] += money;
         }
         if (detail && currentTurn) {
           currentTurn.tokens += delta.input + delta.output + delta.cacheRead + delta.cacheWrite;
+          currentTurn.cost += money;
         }
       }
     }
@@ -206,7 +346,9 @@ export function foldSessionStats(input) {
       total: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite,
     },
     daily,
-    hours: { tokens: hourTokens, turns: hourTurns },
+    hours: { tokens: hourTokens, turns: hourTurns, cost: hourCost },
+    cost: { ...cost, currency: pricing.currency, unit: pricing.unit },
+    models: Array.from(modelBuckets.values()).sort((a, b) => b.cost - a.cost),
     ...(detail ? { perTurn: perTurn.slice(-MAX_TURNS) } : {}),
   };
 }
@@ -268,11 +410,12 @@ export function peekService(ctx, name) {
 export function createStatsResolver(ctx) {
   const cache = new Map();
 
-  function cached(id, tzOffset) {
+  function cached(id, tzOffset, priceKey) {
     const entry = cache.get(id);
     if (!entry) return undefined;
-    // Time buckets are offset-dependent, so a changed time zone invalidates the entry.
-    if (entry.tzOffset !== tzOffset) return undefined;
+    // Time buckets are offset-dependent and money is price-dependent, so either change
+    // invalidates the entry.
+    if (entry.tzOffset !== tzOffset || entry.priceKey !== priceKey) return undefined;
     if (Date.now() - entry.at > CACHE_TTL_MS) {
       cache.delete(id);
       return undefined;
@@ -280,9 +423,9 @@ export function createStatsResolver(ctx) {
     return entry.stats;
   }
 
-  function remember(id, stats, tzOffset) {
+  function remember(id, stats, tzOffset, priceKey) {
     cache.delete(id);
-    cache.set(id, { at: Date.now(), stats, tzOffset });
+    cache.set(id, { at: Date.now(), stats, tzOffset, priceKey });
     while (cache.size > MAX_CACHED) {
       const oldest = cache.keys().next();
       if (oldest.done) break;
@@ -328,12 +471,13 @@ export function createStatsResolver(ctx) {
       now: Date.now(),
       tzOffset: options.tzOffset,
       detail: options.detail,
+      pricing: options.pricing,
     });
     const updatedAt = stats.lastAt || stats.createdAt;
     const record = { id, updatedAt, live: source.live, ...stats };
     // A detail read is a superset of the list read, but the list cache should not pin the
     // heavier per-turn array; remember only what every caller needs.
-    if (!options.detail) remember(id, record, options.tzOffset);
+    if (!options.detail) remember(id, record, options.tzOffset, options.priceKey);
     return { id, stats: record };
   }
 
@@ -345,6 +489,8 @@ export function createStatsResolver(ctx) {
   async function resolve(ids, options = {}) {
     const tzOffset = Number.isFinite(options.tzOffset) ? options.tzOffset : 0;
     const detail = !!options.detail;
+    const pricing = normalizePricing(options.pricing);
+    const priceKey = JSON.stringify(pricing);
     const unique = [];
     const seen = new Set();
     for (const id of ids) {
@@ -360,13 +506,16 @@ export function createStatsResolver(ctx) {
       if (options.signal && options.signal.aborted) return;
       // Per-turn data is only asked for one session at a time and is never served from the
       // list cache, so a detail read always recomputes.
-      const hit = options.fresh || detail ? undefined : cached(id, tzOffset);
+      const hit = options.fresh || detail ? undefined : cached(id, tzOffset, priceKey);
       if (hit) {
         sessions.push(hit);
         return;
       }
       try {
-        const result = await withTimeout(compute(id, options.signal, { tzOffset, detail }), SESSION_TIMEOUT_MS);
+        const result = await withTimeout(
+          compute(id, options.signal, { tzOffset, detail, pricing, priceKey }),
+          SESSION_TIMEOUT_MS,
+        );
         if (result.stats) sessions.push(result.stats);
         else skipped.push({ id: result.id, reason: result.reason || 'unreadable' });
       } catch (error) {
@@ -428,6 +577,16 @@ export function apply(ctx) {
         const detail = payload.searchParams.get('detail') === '1';
         const tzRaw = Number(payload.searchParams.get('tz'));
         const tzOffset = Number.isFinite(tzRaw) && Math.abs(tzRaw) <= 14 * 60 ? tzRaw : 0;
+        // The client owns the price table; a compact base64 JSON keeps this a read-only GET.
+        let pricingInput;
+        const encoded = payload.searchParams.get('p');
+        if (encoded && encoded.length <= 8192) {
+          try {
+            pricingInput = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+          } catch (error) {
+            pricingInput = undefined;
+          }
+        }
         const raw = payload.searchParams.get('ids');
         const requested = raw
           ? raw.split(',').map((value) => value.trim()).filter(Boolean).slice(0, MAX_IDS)
@@ -443,7 +602,13 @@ export function apply(ctx) {
               ids = [];
             }
           }
-          return resolver.resolve(ids, { fresh, detail, tzOffset, signal: controller.signal });
+          return resolver.resolve(ids, {
+            fresh,
+            detail,
+            tzOffset,
+            pricing: pricingInput,
+            signal: controller.signal,
+          });
         };
         resolve()
           .then((body) => {

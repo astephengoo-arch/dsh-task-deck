@@ -70,6 +70,32 @@ window.__ModuleLoader__.load({
       'insights.expand': 'Show more',
       'insights.collapse': 'Show less',
       'insights.totalShort': 'total',
+      'insights.metric': 'Metric',
+      'insights.metricTokens': 'Tokens',
+      'insights.metricCost': 'Money',
+      'insights.pricing': 'Prices',
+      'insights.totalCost': 'Spend',
+      'insights.peakShare': '{value} at peak hours',
+      'insights.peak': 'Peak and off-peak',
+      'insights.peakHours': 'Peak',
+      'insights.offPeakHours': 'Off-peak',
+      'insights.offPeakWindow': 'Discount window',
+      'insights.peakChart': 'Hourly spend',
+      'insights.costTrend': 'Daily spend',
+      'insights.colCost': 'Cost',
+      'insights.sortCost': 'Cost',
+      'pricing.title': 'Price table',
+      'pricing.hint': 'Per 1M tokens. Defaults are illustrative — replace them with your own rates.',
+      'pricing.currency': 'Currency',
+      'pricing.offPeak': 'Off-peak from',
+      'pricing.until': 'until',
+      'pricing.discount': 'Multiplier',
+      'pricing.model': 'Model',
+      'pricing.add': 'Add',
+      'pricing.addModel': 'model id',
+      'pricing.remove': 'Remove',
+      'pricing.reset': 'Reset',
+      'pricing.save': 'Save',
       'dashboard.filterAll': 'All',
       'dashboard.sortUpdated': 'Updated recently',
       'dashboard.search': 'Search tasks, branches, sessions…',
@@ -133,6 +159,7 @@ window.__ModuleLoader__.load({
       'detail.turnDetailHint': 'Latest 40 turns',
       'detail.turnPending': 'Per-turn data is not loaded yet.',
       'detail.turnOpen': 'running',
+      'detail.cost': 'Spend',
       'detail.none': 'None',
       'detail.progress': 'Complete',
       'detail.reviewGate': 'Review gate',
@@ -352,6 +379,32 @@ window.__ModuleLoader__.load({
       'insights.expand': '展开更多',
       'insights.collapse': '收起',
       'insights.totalShort': '合计',
+      'insights.metric': '口径',
+      'insights.metricTokens': 'Token',
+      'insights.metricCost': '金额',
+      'insights.pricing': '价目',
+      'insights.totalCost': '总花费',
+      'insights.peakShare': '高峰时段占 {value}',
+      'insights.peak': '高峰与低谷',
+      'insights.peakHours': '高峰',
+      'insights.offPeakHours': '低谷',
+      'insights.offPeakWindow': '优惠时段',
+      'insights.peakChart': '每小时花费',
+      'insights.costTrend': '每日花费',
+      'insights.colCost': '金额',
+      'insights.sortCost': '金额',
+      'pricing.title': '价目表',
+      'pricing.hint': '单位：每 100 万 token。默认值仅为示例，请按你的实际价目修改。',
+      'pricing.currency': '币种',
+      'pricing.offPeak': '低谷开始',
+      'pricing.until': '结束',
+      'pricing.discount': '折扣系数',
+      'pricing.model': '模型',
+      'pricing.add': '添加',
+      'pricing.addModel': '模型 id',
+      'pricing.remove': '删除',
+      'pricing.reset': '恢复默认',
+      'pricing.save': '保存',
       'dashboard.filterAll': '全部',
       'dashboard.sortUpdated': '最近更新',
       'dashboard.search': '搜索任务、分支或会话…',
@@ -415,6 +468,7 @@ window.__ModuleLoader__.load({
       'detail.turnDetailHint': '最近 40 轮',
       'detail.turnPending': '还没有读取到逐轮数据。',
       'detail.turnOpen': '进行中',
+      'detail.cost': '花费',
       'detail.none': '无',
       'detail.progress': '完成度',
       'detail.reviewGate': '评审门禁',
@@ -614,6 +668,16 @@ window.__ModuleLoader__.load({
     const STATS_PATH = '/task-deck/stats';
     const STATS_BATCH = 8;
     const STATS_CACHE_LIMIT = 120;
+    const PRICING_KEY = 'dsh.taskDeck.pricing.v1';
+    const PRICE_FIELDS = ['input', 'cacheRead', 'cacheWrite', 'output'];
+    // Illustrative defaults: the Stats page lets you replace every number with your own.
+    const DEFAULT_PRICING = {
+      currency: 'CNY',
+      unit: 1_000_000,
+      default: { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 8 },
+      models: { 'deepseek-flash': { input: 2, cacheRead: 0.2, cacheWrite: 0, output: 3 } },
+      offPeak: { startMinute: 30, endMinute: 510, multiplier: 0.5 },
+    };
     const AUTO_DONE_HOURS_OPTIONS = [0, 1, 3, 6, 12, 24, 72, 168, 336, 720];
     const DEFAULT_AUTO_DONE_HOURS = 336;
     const EMPTY_LIST = Object.freeze({
@@ -678,6 +742,116 @@ window.__ModuleLoader__.load({
       const days = Math.floor(hours / 24);
       const restHours = hours % 24;
       return restHours ? `${days}d ${restHours}h` : `${days}d`;
+    }
+
+    function normalizePriceEntry(raw, fallback) {
+      const source = raw && typeof raw === 'object' ? raw : {};
+      const out = {};
+      for (const field of PRICE_FIELDS) {
+        const value = Number(source[field]);
+        out[field] = Number.isFinite(value) && value >= 0 ? value : fallback[field];
+      }
+      return out;
+    }
+
+    function normalizePricingInput(raw) {
+      const source = raw && typeof raw === 'object' ? raw : {};
+      const models = {};
+      const rows = source.models && typeof source.models === 'object' ? source.models : {};
+      for (const [model, entry] of Object.entries(rows)) {
+        if (!model || model.length > 120) continue;
+        models[model] = normalizePriceEntry(entry, DEFAULT_PRICING.default);
+      }
+      for (const [model, entry] of Object.entries(DEFAULT_PRICING.models)) {
+        if (!models[model]) models[model] = normalizePriceEntry(entry, DEFAULT_PRICING.default);
+      }
+      const offPeak = source.offPeak && typeof source.offPeak === 'object' ? source.offPeak : {};
+      const minute = (value, fallback) => {
+        const n = Number(value);
+        return Number.isFinite(n) && n >= 0 && n < 1440 ? Math.round(n) : fallback;
+      };
+      const multiplier = Number(offPeak.multiplier);
+      return {
+        currency: typeof source.currency === 'string' && source.currency ? source.currency.slice(0, 8) : DEFAULT_PRICING.currency,
+        unit: DEFAULT_PRICING.unit,
+        default: normalizePriceEntry(source.default, DEFAULT_PRICING.default),
+        models,
+        offPeak: {
+          startMinute: minute(offPeak.startMinute, DEFAULT_PRICING.offPeak.startMinute),
+          endMinute: minute(offPeak.endMinute, DEFAULT_PRICING.offPeak.endMinute),
+          multiplier: Number.isFinite(multiplier) && multiplier >= 0 && multiplier <= 1 ? multiplier : DEFAULT_PRICING.offPeak.multiplier,
+        },
+      };
+    }
+
+    function loadPricing() {
+      try {
+        const raw = window.localStorage.getItem(PRICING_KEY);
+        if (!raw) return normalizePricingInput(DEFAULT_PRICING);
+        return normalizePricingInput(JSON.parse(raw));
+      } catch (error) {
+        return normalizePricingInput(DEFAULT_PRICING);
+      }
+    }
+
+    function savePricing(pricing) {
+      try {
+        window.localStorage.setItem(PRICING_KEY, JSON.stringify(pricing));
+      } catch (error) {
+        /* prices stay in memory for this session */
+      }
+    }
+
+    function encodePricing(pricing) {
+      try {
+        const json = JSON.stringify(pricing);
+        const bytes = new TextEncoder().encode(json);
+        let binary = '';
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        return window.btoa(binary);
+      } catch (error) {
+        return '';
+      }
+    }
+
+    function moneySymbol(currency) {
+      if (currency === 'CNY' || currency === 'RMB') return '¥';
+      if (currency === 'USD') return '$';
+      if (currency === 'EUR') return '€';
+      return `${currency || ''} `;
+    }
+
+    function formatMoney(value, currency) {
+      const amount = Number(value) || 0;
+      const symbol = moneySymbol(currency);
+      if (amount === 0) return `${symbol}0`;
+      if (amount >= 1000) return `${symbol}${Math.round(amount).toLocaleString()}`;
+      if (amount >= 0.1) return `${symbol}${amount.toFixed(2)}`;
+      if (amount >= 0.01) return `${symbol}${amount.toFixed(3)}`;
+      return `${symbol}${amount.toFixed(4)}`;
+    }
+
+    function formatMoneyAxis(value, currency) {
+      const amount = Number(value) || 0;
+      const symbol = moneySymbol(currency);
+      if (amount >= 1000) return `${symbol}${(amount / 1000).toFixed(1)}k`;
+      if (amount >= 1) return `${symbol}${amount.toFixed(0)}`;
+      if (amount >= 0.01) return `${symbol}${amount.toFixed(2)}`;
+      return `${symbol}${amount.toFixed(3)}`;
+    }
+
+    function formatMinuteOfDay(minute) {
+      const value = Math.max(0, Math.min(1439, Math.round(minute || 0)));
+      return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`;
+    }
+
+    function parseMinuteOfDay(text, fallback) {
+      const match = /^(\d{1,2}):(\d{2})$/.exec(String(text || '').trim());
+      if (!match) return fallback;
+      const hour = Number(match[1]);
+      const minute = Number(match[2]);
+      if (hour > 23 || minute > 59) return fallback;
+      return hour * 60 + minute;
     }
 
     function timezoneOffset() {
@@ -969,6 +1143,7 @@ window.__ModuleLoader__.load({
       const titleRequests = new Set();
       const titleQueue = [];
       const listeners = new Set();
+      let pricing = loadPricing();
       let statsById = loadStatsCache();
       let statsStatus = 'idle';
       let statsError = '';
@@ -1032,6 +1207,7 @@ window.__ModuleLoader__.load({
         const collected = [];
         const query = [
           `tz=${timezoneOffset()}`,
+          `p=${encodePricing(pricing)}`,
           fresh ? 'fresh=1' : '',
           detail ? 'detail=1' : '',
         ].filter(Boolean).join('&');
@@ -1121,6 +1297,7 @@ window.__ModuleLoader__.load({
           annotations,
           autoDoneHours: settings.autoDoneHours,
           stats: { byId: statsById, status: statsStatus, error: statsError },
+          pricing,
         };
         scheduleTitleRefresh(tasks);
         return cached;
@@ -1173,6 +1350,23 @@ window.__ModuleLoader__.load({
         },
         loadTurnDetail(sessionId) {
           return loadTurnDetail(sessionId);
+        },
+        setPricing(next) {
+          pricing = normalizePricingInput(next);
+          savePricing(pricing);
+          // Money is derived from prices, so every cached record is stale now.
+          statsById = {};
+          saveStatsCache({});
+          notify();
+          return loadStats({ fresh: true });
+        },
+        resetPricing() {
+          pricing = normalizePricingInput(DEFAULT_PRICING);
+          savePricing(pricing);
+          statsById = {};
+          saveStatsCache({});
+          notify();
+          return loadStats({ fresh: true });
         },
         refreshStats() {
           return loadStats({ fresh: true });
@@ -1714,6 +1908,7 @@ window.__ModuleLoader__.load({
       const count = labels.length;
       const totals = labels.map((_, index) => series.reduce((sum, item) => sum + (item.values[index] || 0), 0));
       const max = niceMax(Math.max(1, ...totals));
+      const fmtValue = props.formatValue || formatTokens;
       const xOf = (index) => (count <= 1 ? pad.left + innerW / 2 : pad.left + (innerW * index) / (count - 1));
       const yOf = (value) => pad.top + innerH - (Math.max(0, value) / max) * innerH;
 
@@ -1754,7 +1949,7 @@ window.__ModuleLoader__.load({
           title: labels[tipIndex],
           rows: series.map((item) => ({
             label: item.label,
-            value: formatTokens(item.values[tipIndex] || 0),
+            value: fmtValue(item.values[tipIndex] || 0),
             className: item.className,
           })),
         }
@@ -1776,7 +1971,7 @@ window.__ModuleLoader__.load({
           h('title', null, props.ariaLabel || ''),
           axisTicks(max, 3).map((tick, index) => h('g', { key: `tick-${index}` },
             h('line', { className: 'td-chart-grid', x1: pad.left, x2: width - pad.right, y1: yOf(tick), y2: yOf(tick) }),
-            h('text', { className: 'td-chart-axis', x: pad.left - 6, y: yOf(tick) + 3, textAnchor: 'end' }, formatTokens(tick)))),
+            h('text', { className: 'td-chart-axis', x: pad.left - 6, y: yOf(tick) + 3, textAnchor: 'end' }, fmtValue(tick)))),
           stack.map((entry) => h('path', {
             key: entry.item.key,
             className: `td-chart-area ${entry.item.className || ''}`,
@@ -1830,6 +2025,7 @@ window.__ModuleLoader__.load({
       const innerW = Math.max(10, width - pad.left - pad.right);
       const innerH = Math.max(10, height - pad.top - pad.bottom);
       const max = niceMax(Math.max(1, ...values));
+      const fmtValue = props.formatValue || formatDuration;
       const count = labels.length;
       const xOf = (index) => (count <= 1 ? pad.left + innerW / 2 : pad.left + (innerW * index) / (count - 1));
       const yOf = (value) => pad.top + innerH - (Math.max(0, value) / max) * innerH;
@@ -1856,7 +2052,7 @@ window.__ModuleLoader__.load({
           y: height / 2,
           flip: xOf(tipIndex) > width * 0.6,
           title: labels[tipIndex],
-          rows: [{ label: props.label || '', value: formatDuration(values[tipIndex] || 0), className: 'is-work' }],
+          rows: [{ label: props.label || '', value: fmtValue(values[tipIndex] || 0), className: 'is-work' }],
         }
         : null;
 
@@ -1876,7 +2072,7 @@ window.__ModuleLoader__.load({
           h('title', null, props.ariaLabel || ''),
           axisTicks(max, 2).map((tick, index) => h('g', { key: `tick-${index}` },
             h('line', { className: 'td-chart-grid', x1: pad.left, x2: width - pad.right, y1: yOf(tick), y2: yOf(tick) }),
-            h('text', { className: 'td-chart-axis', x: pad.left - 6, y: yOf(tick) + 3, textAnchor: 'end' }, formatDuration(tick)))),
+            h('text', { className: 'td-chart-axis', x: pad.left - 6, y: yOf(tick) + 3, textAnchor: 'end' }, fmtValue(tick)))),
           area ? h('path', { className: 'td-chart-area is-work', d: area }) : null,
           line ? h('path', { className: 'td-chart-line is-work', d: line }) : null,
           tipIndex >= 0
@@ -1936,7 +2132,8 @@ window.__ModuleLoader__.load({
       const arcs = donutArcs(values, size / 2, size / 2, radius, thickness);
       const total = values.reduce((sum, value) => sum + value, 0);
       const active = hover >= 0 ? items[hover] : null;
-      const centerValue = active ? active.value : total;
+      const formatItem = (item) => (item && item.display ? item.display : formatTokens(item ? item.value : 0));
+      const centerText = active ? formatItem(active) : (props.centerValue || formatTokens(total));
 
       return h(
         'div',
@@ -1967,7 +2164,7 @@ window.__ModuleLoader__.load({
             x: size / 2,
             y: size / 2 + 1,
             textAnchor: 'middle',
-          }, formatTokens(centerValue)),
+          }, centerText),
           h('text', {
             className: 'td-donut-label',
             x: size / 2,
@@ -1989,7 +2186,7 @@ window.__ModuleLoader__.load({
             },
             h('span', { className: `td-chart-dot ${item.className || ''}` }),
             h('span', { className: 'td-chart-legend-label' }, item.label),
-            h('strong', null, formatTokens(item.value)),
+            h('strong', null, formatItem(item)),
             h('span', { className: 'td-chart-legend-share' }, `${total ? Math.round((item.value / total) * 100) : 0}%`),
           )),
         ),
@@ -2194,10 +2391,85 @@ window.__ModuleLoader__.load({
               rows: [
                 { label: props.workLabel || '', value: formatDuration(turns[hover].ms || 0), className: 'is-work' },
                 { label: props.tokenLabel || '', value: formatTokens(turns[hover].tokens || 0), className: 'is-read' },
+                ...(props.showCost ? [{ label: props.costLabel || '', value: formatMoney(turns[hover].cost || 0, props.currency), className: 'is-output' }] : []),
               ],
             },
           })
           : null,
+      );
+    }
+
+    /** 24-hour money bars with the discounted window shaded behind them. */
+    function HourCostBars(props) {
+      const values = props.values || [];
+      const [ref, width] = useChartWidth(props.fallbackWidth || 640);
+      const [hover, setHover] = React.useState(-1);
+      const height = props.height || 108;
+      const pad = { top: 8, right: 6, bottom: 16, left: 46 };
+      const innerW = Math.max(10, width - pad.left - pad.right);
+      const innerH = Math.max(10, height - pad.top - pad.bottom);
+      const max = niceMax(Math.max(1, ...values));
+      const slot = innerW / 24;
+      const barWidth = Math.max(2, slot - 3);
+      const yOf = (value) => pad.top + innerH - (Math.max(0, value) / max) * innerH;
+      const xOfHour = (hour) => pad.left + hour * slot;
+      const start = props.windowStart || 0;
+      const end = props.windowEnd || 0;
+      const bandStart = xOfHour(start / 60);
+      const bandEnd = xOfHour(end / 60);
+      const bandWidth = end > start ? bandEnd - bandStart : innerW - (bandStart - pad.left);
+
+      return h(
+        'div',
+        { className: 'td-chart', ref },
+        h(
+          'svg',
+          { width: '100%', height, role: 'img', 'aria-label': props.ariaLabel || '' },
+          h('title', null, props.ariaLabel || ''),
+          bandWidth > 0
+            ? h('rect', { className: 'td-chart-band', x: bandStart, y: pad.top, width: bandWidth, height: innerH, rx: 4 })
+            : null,
+          [0, 0.5, 1].map((ratio, index) => h('g', { key: `t-${index}` },
+            h('line', { className: 'td-chart-grid', x1: pad.left, x2: width - pad.right, y1: yOf(max * ratio), y2: yOf(max * ratio) }),
+            h('text', { className: 'td-chart-axis', x: pad.left - 6, y: yOf(max * ratio) + 3, textAnchor: 'end' },
+              props.formatValue ? props.formatValue(max * ratio) : formatTokens(max * ratio)))),
+          values.map((value, hour) => {
+            const top = yOf(value);
+            return h('rect', {
+              key: hour,
+              className: `td-hour-bar${hover === hour ? ' is-hot' : ''}`,
+              x: pad.left + hour * slot + (slot - barWidth) / 2,
+              y: top,
+              width: barWidth,
+              height: Math.max(1, pad.top + innerH - top),
+              rx: 2,
+              onMouseEnter: () => setHover(hour),
+              onMouseLeave: () => setHover(-1),
+            });
+          }),
+          [0, 6, 12, 18, 23].map((hour) => h('text', {
+            key: `h-${hour}`,
+            className: 'td-chart-axis',
+            x: xOfHour(hour) + slot / 2,
+            y: height - 4,
+            textAnchor: 'middle',
+          }, String(hour).padStart(2, '0'))),
+        ),
+        h(ChartTip, {
+          tip: hover >= 0
+            ? {
+              x: xOfHour(hover) + slot / 2,
+              y: height / 2,
+              flip: hover > 16,
+              title: `${String(hover).padStart(2, '0')}:00`,
+              rows: [{
+                label: props.label || '',
+                value: props.formatValue ? props.formatValue(values[hover] || 0) : String(values[hover] || 0),
+                className: 'is-read',
+              }],
+            }
+            : null,
+        }),
       );
     }
 
@@ -2224,6 +2496,133 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function PricingEditor(props) {
+      const t = props.t;
+      const [draft, setDraft] = React.useState(() => JSON.parse(JSON.stringify(props.pricing)));
+      const [newModel, setNewModel] = React.useState('');
+
+      function update(patch) {
+        setDraft({ ...draft, ...patch });
+      }
+
+      function updateModel(model, field, value) {
+        const next = { ...draft.models, [model]: { ...draft.models[model], [field]: value } };
+        setDraft({ ...draft, models: next });
+      }
+
+      function addModel() {
+        const name = newModel.trim();
+        if (!name || draft.models[name]) return;
+        setDraft({
+          ...draft,
+          models: { ...draft.models, [name]: { ...draft.default } },
+        });
+        setNewModel('');
+      }
+
+      function removeModel(model) {
+        if (model === 'deepseek-flash') return;
+        const next = { ...draft.models };
+        delete next[model];
+        setDraft({ ...draft, models: next });
+      }
+
+      function numberField(value, onChange, step, extra) {
+        return h('input', {
+          type: 'number',
+          className: 'td-price-input',
+          min: 0,
+          step: step || 0.1,
+          value: String(value),
+          onChange: (event) => onChange(Number(event.target.value)),
+          ...extra,
+        });
+      }
+
+      return h(
+        'div',
+        { className: 'td-card td-price-panel' },
+        h('div', { className: 'td-ins-card-head' },
+          h('div', { className: 'td-ins-card-title' }, t('pricing.title')),
+          h('span', { className: 'td-ins-foot' }, t('pricing.hint'))),
+        h('div', { className: 'td-price-row' },
+          h('label', { className: 'td-price-field' },
+            h('span', null, t('pricing.currency')),
+            h('input', {
+              type: 'text',
+              className: 'td-price-input',
+              value: draft.currency,
+              maxLength: 8,
+              onChange: (event) => update({ currency: event.target.value.toUpperCase() }),
+            })),
+          h('label', { className: 'td-price-field' },
+            h('span', null, t('pricing.offPeak')),
+            h('input', {
+              type: 'time',
+              className: 'td-price-input',
+              value: formatMinuteOfDay(draft.offPeak.startMinute),
+              onChange: (event) => update({
+                offPeak: { ...draft.offPeak, startMinute: parseMinuteOfDay(event.target.value, draft.offPeak.startMinute) },
+              }),
+            })),
+          h('label', { className: 'td-price-field' },
+            h('span', null, t('pricing.until')),
+            h('input', {
+              type: 'time',
+              className: 'td-price-input',
+              value: formatMinuteOfDay(draft.offPeak.endMinute),
+              onChange: (event) => update({
+                offPeak: { ...draft.offPeak, endMinute: parseMinuteOfDay(event.target.value, draft.offPeak.endMinute) },
+              }),
+            })),
+          h('label', { className: 'td-price-field' },
+            h('span', null, t('pricing.discount')),
+            numberField(draft.offPeak.multiplier, (value) => update({
+              offPeak: { ...draft.offPeak, multiplier: Math.max(0, Math.min(1, value)) },
+            }), 0.05)),
+        ),
+        h('div', { className: 'td-price-head' },
+          h('span', null, t('pricing.model')),
+          h('span', null, t('insights.input')),
+          h('span', null, t('insights.cacheRead')),
+          h('span', null, t('insights.cacheWrite')),
+          h('span', null, t('insights.output')),
+          h('span', null, '')),
+        Object.keys(draft.models).map((model) => h('div', { key: model, className: 'td-price-head td-price-model' },
+          h('span', { className: 'td-price-name', title: model }, model),
+          PRICE_FIELDS.map((field) => numberField(draft.models[model][field], (value) => updateModel(model, field, value), 0.1, { key: field })),
+          h('button', {
+            type: 'button',
+            className: 'td-price-remove',
+            'aria-label': `${t('pricing.remove')} ${model}`,
+            disabled: model === 'deepseek-flash',
+            onClick: () => removeModel(model),
+          }, '×'))),
+        h('div', { className: 'td-price-row' },
+          h('input', {
+            type: 'text',
+            className: 'td-price-input',
+            placeholder: t('pricing.addModel'),
+            value: newModel,
+            onChange: (event) => setNewModel(event.target.value),
+            onKeyDown: (event) => { if (event.key === 'Enter') addModel(); },
+          }),
+          h('button', { type: 'button', className: 'td-btn td-btn-sm', onClick: addModel }, t('pricing.add')),
+          h('span', { style: { flex: 1 } }),
+          h('button', {
+            type: 'button',
+            className: 'td-btn td-btn-sm',
+            onClick: () => { props.onReset(); props.onClose(); },
+          }, t('pricing.reset')),
+          h('button', {
+            type: 'button',
+            className: 'td-btn td-btn-primary td-btn-sm',
+            onClick: () => { props.onSave(draft); props.onClose(); },
+          }, t('pricing.save')),
+        ),
+      );
+    }
+
     function InsightsBody(props) {
       const t = props.t;
       const state = props.state;
@@ -2233,6 +2632,10 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [hidden, setHidden] = React.useState({});
       const [ganttOpen, setGanttOpen] = React.useState(false);
+      const [metric, setMetric] = React.useState('tokens');
+      const [priceOpen, setPriceOpen] = React.useState(false);
+      const pricing = state.pricing || DEFAULT_PRICING;
+      const priceMode = metric === 'cost';
 
       React.useEffect(() => {
         store.loadStats();
@@ -2254,12 +2657,33 @@ window.__ModuleLoader__.load({
         acc.tokens += row.stat ? row.stat.tokens.total : 0;
         acc.work += row.stat ? row.stat.workMs : 0;
         acc.turns += row.stat ? row.stat.turns : 0;
+        if (row.stat && row.stat.cost) {
+          acc.cost += row.stat.cost.total || 0;
+          acc.peak += row.stat.cost.peak || 0;
+          acc.offPeak += row.stat.cost.offPeak || 0;
+          for (const field of PRICE_FIELDS) {
+            acc.byClass[field] += (row.stat.cost.byClass && row.stat.cost.byClass[field]) || 0;
+          }
+        }
         if (row.task.running) acc.running += 1;
         if (row.stat) acc.measured += 1;
         return acc;
-      }, { tokens: 0, work: 0, turns: 0, running: 0, measured: 0 });
+      }, {
+        tokens: 0,
+        work: 0,
+        turns: 0,
+        running: 0,
+        measured: 0,
+        cost: 0,
+        peak: 0,
+        offPeak: 0,
+        byClass: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+      });
 
       const sorted = rows.slice().sort((a, b) => {
+        if (sort === 'cost') {
+          return (b.stat && b.stat.cost ? b.stat.cost.total : -1) - (a.stat && a.stat.cost ? a.stat.cost.total : -1);
+        }
         if (sort === 'work') return (b.stat ? b.stat.workMs : -1) - (a.stat ? a.stat.workMs : -1);
         if (sort === 'turns') return (b.stat ? b.stat.turns : -1) - (a.stat ? a.stat.turns : -1);
         if (sort === 'recent') return b.task.updatedAt - a.task.updatedAt;
@@ -2282,9 +2706,20 @@ window.__ModuleLoader__.load({
         if (!row.stat || !Array.isArray(row.stat.daily)) continue;
         for (const day of row.stat.daily) {
           if (!day || typeof day.d !== 'string') continue;
-          const bucket = dayMap.get(day.d) || { d: day.d, ms: 0, turns: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+          const bucket = dayMap.get(day.d) || {
+            d: day.d,
+            ms: 0,
+            turns: 0,
+            cost: 0,
+            costByClass: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+            tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          };
           bucket.ms += day.ms || 0;
           bucket.turns += day.turns || 0;
+          bucket.cost += day.cost || 0;
+          for (const field of PRICE_FIELDS) {
+            bucket.costByClass[field] += day.costByClass ? day.costByClass[field] || 0 : 0;
+          }
           bucket.tokens.input += day.tokens ? day.tokens.input : 0;
           bucket.tokens.output += day.tokens ? day.tokens.output : 0;
           bucket.tokens.cacheRead += day.tokens ? day.tokens.cacheRead : 0;
@@ -2297,18 +2732,26 @@ window.__ModuleLoader__.load({
       const days = (cutoffDay ? allDays.filter((day) => day.d >= cutoffDay) : allDays).slice(-120);
       const dayLabels = days.map((day) => day.d);
       const areaSeries = [
-        { key: 'cacheRead', label: t('insights.cacheRead'), className: 'is-read', values: days.map((day) => day.tokens.cacheRead) },
-        { key: 'input', label: t('insights.input'), className: 'is-input', values: days.map((day) => day.tokens.input) },
-        { key: 'output', label: t('insights.output'), className: 'is-output', values: days.map((day) => day.tokens.output) },
-        { key: 'cacheWrite', label: t('insights.cacheWrite'), className: 'is-write', values: days.map((day) => day.tokens.cacheWrite) },
-      ].filter((series) => !hidden[series.key]);
+        { key: 'cacheRead', label: t('insights.cacheRead'), className: 'is-read' },
+        { key: 'input', label: t('insights.input'), className: 'is-input' },
+        { key: 'output', label: t('insights.output'), className: 'is-output' },
+        { key: 'cacheWrite', label: t('insights.cacheWrite'), className: 'is-write' },
+      ].map((series) => ({
+        ...series,
+        values: days.map((day) => (priceMode ? day.costByClass[series.key] : day.tokens[series.key])),
+      })).filter((series) => !hidden[series.key]);
       const workValues = days.map((day) => day.ms);
 
       const hourTokens = new Array(168).fill(0);
+      const hourCost = new Array(168).fill(0);
+      const hourOfDayCost = new Array(24).fill(0);
       for (const row of rows) {
-        if (!row.stat || !row.stat.hours || !Array.isArray(row.stat.hours.tokens)) continue;
+        if (!row.stat || !row.stat.hours) continue;
         for (let index = 0; index < 168; index += 1) {
-          hourTokens[index] += row.stat.hours.tokens[index] || 0;
+          hourTokens[index] += (row.stat.hours.tokens && row.stat.hours.tokens[index]) || 0;
+          const cost = (row.stat.hours.cost && row.stat.hours.cost[index]) || 0;
+          hourCost[index] += cost;
+          hourOfDayCost[index % 24] += cost;
         }
       }
 
@@ -2385,7 +2828,9 @@ window.__ModuleLoader__.load({
           },
           h('span', { className: 'td-ins-dot' }),
           h('span', null, series.label),
-          h('strong', null, formatTokens(composition[series.key])),
+          h('strong', null, priceMode
+            ? formatMoney(totals.byClass[series.key], pricing.currency)
+            : formatTokens(composition[series.key])),
         );
       }
 
@@ -2418,11 +2863,32 @@ window.__ModuleLoader__.load({
             )),
           ),
           h('span', { style: { flex: 1 } }),
+          h(
+            'div',
+            { className: 'td-ins-metric', role: 'group', 'aria-label': t('insights.metric') },
+            [['tokens', t('insights.metricTokens')], ['cost', t('insights.metricCost')]].map(([value, label]) => h(
+              'button',
+              {
+                key: value,
+                type: 'button',
+                className: 'td-ins-metric-btn',
+                'aria-pressed': metric === value,
+                onClick: () => setMetric(value),
+              },
+              label,
+            )),
+          ),
           latest
             ? h('span', { className: 'td-ins-stamp' }, fmt(t('insights.updatedAt'), {
               time: new Date(latest).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
             }))
             : null,
+          h(
+            'button',
+            { type: 'button', className: 'td-btn td-btn-sm', 'aria-expanded': priceOpen, onClick: () => setPriceOpen(!priceOpen) },
+            h(Icon, { name: 'tag', size: 12 }),
+            t('insights.pricing'),
+          ),
           h(
             'button',
             {
@@ -2438,6 +2904,15 @@ window.__ModuleLoader__.load({
         failed
           ? h('div', { className: 'td-ins-notice is-error' }, h(Icon, { name: 'alert', size: 13 }), h('span', null, t('insights.error')))
           : null,
+        priceOpen
+          ? h(PricingEditor, {
+            t,
+            pricing,
+            onSave: (next) => store.setPricing(next),
+            onReset: () => store.resetPricing(),
+            onClose: () => setPriceOpen(false),
+          })
+          : null,
         h(
           'div',
           { className: 'td-ins-kpis' },
@@ -2446,6 +2921,12 @@ window.__ModuleLoader__.load({
             h('div', { className: 'td-ins-kpi-value' }, rows.length),
             h('div', { className: 'td-ins-kpi-foot' },
               h('span', { className: 'td-ins-kpi-hint' }, fmt(t('insights.runningHint'), { n: totals.running })))),
+          h('div', { className: 'td-ins-kpi' },
+            h('div', { className: 'td-ins-kpi-label' }, t('insights.totalCost')),
+            h('div', { className: 'td-ins-kpi-value' }, formatMoney(totals.cost, pricing.currency)),
+            h('div', { className: 'td-ins-kpi-hint' }, fmt(t('insights.peakShare'), {
+              value: totals.cost > 0 ? `${Math.round((totals.peak / totals.cost) * 100)}%` : '—',
+            }))),
           h('div', { className: 'td-ins-kpi' },
             h('div', { className: 'td-ins-kpi-label' }, t('insights.totalTokens')),
             h('div', { className: 'td-ins-kpi-value' }, formatTokens(composition.total)),
@@ -2464,6 +2945,31 @@ window.__ModuleLoader__.load({
         ),
         h(
           'div',
+          { className: 'td-card td-ins-card' },
+          h('div', { className: 'td-ins-card-head' },
+            h('div', { className: 'td-ins-card-title' }, t('insights.peak')),
+            h('span', { className: 'td-ins-foot' },
+              `${t('insights.offPeakWindow')} ${formatMinuteOfDay(pricing.offPeak.startMinute)}–${formatMinuteOfDay(pricing.offPeak.endMinute)} · ${Math.round(pricing.offPeak.multiplier * 100)}%`)),
+          h('div', { className: 'td-ins-peaks' },
+            h('div', { className: 'td-ins-peak-item is-peak' },
+              h('span', { className: 'td-ins-peak-label' }, t('insights.peakHours')),
+              h('strong', null, formatMoney(totals.peak, pricing.currency)),
+              h('span', { className: 'td-ins-peak-share' }, totals.cost > 0 ? `${Math.round((totals.peak / totals.cost) * 100)}%` : '—')),
+            h('div', { className: 'td-ins-peak-item is-off' },
+              h('span', { className: 'td-ins-peak-label' }, t('insights.offPeakHours')),
+              h('strong', null, formatMoney(totals.offPeak, pricing.currency)),
+              h('span', { className: 'td-ins-peak-share' }, totals.cost > 0 ? `${Math.round((totals.offPeak / totals.cost) * 100)}%` : '—'))),
+          h(HourCostBars, {
+            values: hourOfDayCost,
+            windowStart: pricing.offPeak.startMinute,
+            windowEnd: pricing.offPeak.endMinute,
+            label: t('insights.colCost'),
+            formatValue: (value) => formatMoneyAxis(value, pricing.currency),
+            ariaLabel: t('insights.peakChart'),
+          }),
+        ),
+        h(
+          'div',
           { className: 'td-ins-split' },
           h(
             'div',
@@ -2471,15 +2977,16 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'td-ins-card-head' },
-              h('div', { className: 'td-ins-card-title' }, t('insights.trend')),
+              h('div', { className: 'td-ins-card-title' }, priceMode ? t('insights.costTrend') : t('insights.trend')),
               h('div', { className: 'td-ins-legend' }, allSeries.map(legendButton)),
             ),
             hasSeries
               ? h(StackedAreaChart, {
                 series: areaSeries,
                 labels: dayLabels,
-                ariaLabel: t('insights.trend'),
+                ariaLabel: priceMode ? t('insights.costTrend') : t('insights.trend'),
                 height: 200,
+                formatValue: priceMode ? (value) => formatMoneyAxis(value, pricing.currency) : undefined,
               })
               : h('div', { className: 'td-ins-empty' }, h(Icon, { name: 'clock', size: 16 }), h('span', null, t('insights.noData'))),
             h('div', { className: 'td-ins-foot' }, t('insights.trendHint')),
@@ -2488,9 +2995,16 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'td-card td-ins-card' },
             h('div', { className: 'td-ins-card-head' }, h('div', { className: 'td-ins-card-title' }, t('insights.composition'))),
-            composition.total > 0
+            (priceMode ? totals.cost : composition.total) > 0
               ? h(DonutChart, {
-                items: allSeries.map((series) => ({ ...series, value: composition[series.key] })),
+                items: allSeries.map((series) => ({
+                  ...series,
+                  value: priceMode ? totals.byClass[series.key] : composition[series.key],
+                  display: priceMode
+                    ? formatMoney(totals.byClass[series.key], pricing.currency)
+                    : formatTokens(composition[series.key]),
+                })),
+                centerValue: priceMode ? formatMoney(totals.cost, pricing.currency) : undefined,
                 centerLabel: t('insights.totalShort'),
                 ariaLabel: t('insights.composition'),
               })
@@ -2519,11 +3033,13 @@ window.__ModuleLoader__.load({
           h('div', { className: 'td-ins-card-head' },
             h('div', { className: 'td-ins-card-title' }, t('insights.heatmap')),
             h('span', { className: 'td-ins-foot' }, t('insights.heatmapHint'))),
-          totals.tokens > 0
+          (priceMode ? totals.cost : totals.tokens) > 0
             ? h(HeatmapChart, {
-              values: hourTokens,
-              label: t('insights.colTokens'),
-              formatValue: formatTokens,
+              values: priceMode ? hourCost : hourTokens,
+              label: priceMode ? t('insights.colCost') : t('insights.colTokens'),
+              formatValue: priceMode
+                ? (value) => formatMoneyAxis(value, pricing.currency)
+                : formatTokens,
               ariaLabel: t('insights.heatmap'),
             })
             : h('div', { className: 'td-ins-empty' }, h(Icon, { name: 'clock', size: 16 }), h('span', null, t('insights.noData'))),
@@ -2559,6 +3075,7 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'td-ins-sorts' },
+              sortButton('cost', t('insights.sortCost')),
               sortButton('tokens', t('insights.sortTokens')),
               sortButton('work', t('insights.sortWork')),
               sortButton('turns', t('insights.sortTurns')),
@@ -2578,6 +3095,7 @@ window.__ModuleLoader__.load({
                 h('span', null, t('insights.colWork')),
                 h('span', null, t('insights.colSpan')),
                 h('span', null, t('insights.colTokens')),
+                h('span', null, t('insights.colCost')),
               ),
               sorted.map((row) => h(
                 'button',
@@ -2605,6 +3123,8 @@ window.__ModuleLoader__.load({
                     : h('span', { className: 'td-ins-muted' }, loading ? t('insights.loading') : '—'),
                   row.stat ? h(TokenBar, { tokens: row.stat.tokens }) : null,
                 ),
+                h('span', { className: 'td-ins-num td-ins-cost' },
+                  row.stat && row.stat.cost ? formatMoney(row.stat.cost.total, pricing.currency) : '—'),
               )),
             ),
           unmeasured > 0 && !failed
@@ -3327,6 +3847,9 @@ window.__ModuleLoader__.load({
                     workLabel: t('insights.colWork'),
                     tokenLabel: t('insights.colTokens'),
                     openLabel: t('detail.turnOpen'),
+                    showCost: true,
+                    costLabel: t('insights.colCost'),
+                    currency: (state.pricing || DEFAULT_PRICING).currency,
                   })
                   : h('div', { className: 'td-ins-empty' }, h(Icon, { name: 'clock', size: 16 }), h('span', null, t('detail.turnPending'))),
               ),
@@ -3658,6 +4181,17 @@ window.__ModuleLoader__.load({
                 { className: 'td-prop' },
                 h('span', { className: 'td-prop-label' }, h(Icon, { name: 'check', size: 11 }), t('detail.turns')),
                 h('span', { className: 'td-prop-value' }, stat ? stat.turns : '—'),
+              ),
+              h(
+                'div',
+                { className: 'td-prop' },
+                h('span', { className: 'td-prop-label' }, h(Icon, { name: 'tag', size: 11 }), t('detail.cost')),
+                h('span', {
+                  className: 'td-prop-value',
+                  title: stat && stat.cost
+                    ? `${t('insights.peakHours')} ${formatMoney(stat.cost.peak, stat.cost.currency)} · ${t('insights.offPeakHours')} ${formatMoney(stat.cost.offPeak, stat.cost.currency)}`
+                    : '',
+                }, stat && stat.cost ? formatMoney(stat.cost.total, stat.cost.currency) : '—'),
               ),
             ),
           ),
@@ -4799,7 +5333,7 @@ window.__ModuleLoader__.load({
       .td-ins-seg { display: block; height: 100%; }
       .td-ins-table { display: grid; margin-top: 10px; }
       .td-ins-tr {
-        display: grid; grid-template-columns: minmax(0, 1fr) 48px 74px 74px 132px;
+        display: grid; grid-template-columns: minmax(0, 1fr) 42px 68px 68px 124px 78px;
         align-items: center; gap: 10px; padding: 7px 2px;
       }
       .td-ins-thead {
@@ -4900,6 +5434,50 @@ window.__ModuleLoader__.load({
       .td-turn-bar.is-open { fill: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 72%, transparent); }
       .td-turn-bar.is-hot { fill: var(--dsw-alias-brand-primary); }
 
+      /* Money */
+      .td-ins-metric { display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); }
+      .td-ins-metric-btn {
+        padding: 3px 9px; border: 0; border-radius: 6px; background: transparent;
+        color: var(--dsw-alias-label-secondary); font-size: 10.5px; cursor: pointer;
+      }
+      .td-ins-metric-btn[aria-pressed='true'] { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font-weight: 580; }
+      .td-ins-cost { font-weight: 560; font-variant-numeric: tabular-nums; }
+      .td-ins-peaks { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+      .td-ins-peak-item {
+        flex: 1 1 160px; display: grid; gap: 2px; padding: 9px 11px;
+        border: 1px solid var(--dsw-alias-border-l1); border-radius: 9px; background: var(--dsw-alias-bg-layer-1);
+      }
+      .td-ins-peak-label { color: var(--dsw-alias-label-secondary); font-size: 10px; }
+      .td-ins-peak-item strong { font-size: 16px; font-weight: 620; font-variant-numeric: tabular-nums; }
+      .td-ins-peak-share { color: var(--dsw-alias-label-secondary); font-size: 10px; }
+      .td-ins-peak-item.is-off { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 38%, var(--dsw-alias-border-l1)); }
+      .td-ins-peak-item.is-off strong { color: var(--dsw-alias-state-warn-primary); }
+      .td-chart-band { fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent); stroke: color-mix(in srgb, var(--dsw-alias-brand-primary) 26%, transparent); stroke-dasharray: 3 3; }
+      .td-hour-bar { fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 52%, transparent); transition: fill .12s ease; }
+      .td-hour-bar.is-hot { fill: var(--dsw-alias-brand-primary); }
+      .td-price-panel { margin-top: 2px; }
+      .td-price-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+      .td-price-field { display: grid; gap: 3px; font-size: 10px; color: var(--dsw-alias-label-secondary); }
+      .td-price-input {
+        width: 96px; height: 26px; padding: 0 7px;
+        border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px;
+        background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-size: 11px;
+      }
+      .td-price-input:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+      .td-price-head {
+        display: grid; grid-template-columns: minmax(90px, 1fr) repeat(4, 96px) 26px;
+        align-items: center; gap: 8px; margin-top: 8px;
+        color: var(--dsw-alias-label-secondary); font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+      }
+      .td-price-model { text-transform: none; letter-spacing: 0; font-size: 11px; color: var(--dsw-alias-label-primary); }
+      .td-price-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .td-price-remove {
+        width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent;
+        color: var(--dsw-alias-label-secondary); cursor: pointer;
+      }
+      .td-price-remove:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-state-error-primary); }
+      .td-price-remove:disabled { opacity: .25; cursor: default; }
+
       /* Responsive */
       @container (max-width: 900px) {
         .td-grid { grid-template-columns: 1fr; }
@@ -4941,6 +5519,9 @@ window.__ModuleLoader__.load({
       @media (max-width: 520px) {
         .td-inner, .td-detail { padding-left: 14px; padding-right: 14px; }
         .td-ins-kpis { grid-template-columns: minmax(0, 1fr); }
+        .td-price-head { grid-template-columns: minmax(56px, 1fr) repeat(4, 58px) 20px; gap: 5px; }
+        .td-price-head .td-price-input { width: 100%; }
+        .td-price-row .td-price-input { width: 100%; }
         .td-ins-tr { grid-template-columns: minmax(0, 1fr) 62px 100px; }
         .td-ins-tr > :nth-child(2) { display: none; }
         .td-ins-card-head { align-items: flex-start; }
