@@ -68,7 +68,7 @@ node --check client.js
 node --check index.js
 ```
 
-设计说明：[docs/DESIGN.md](docs/DESIGN.md)。发布说明：[docs/PUBLISHING.md](docs/PUBLISHING.md)。
+设计说明：[docs/DESIGN.md](docs/DESIGN.md)。发布说明：[docs/PUBLISHING.md](docs/PUBLISHING.md)。交接说明：[docs/HANDOFF.md](docs/HANDOFF.md)。
 
 ## 隐私
 

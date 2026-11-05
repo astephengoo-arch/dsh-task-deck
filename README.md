@@ -68,7 +68,7 @@ node --check client.js
 node --check index.js
 ```
 
-Design notes: [docs/DESIGN.md](docs/DESIGN.md). Publishing notes: [docs/PUBLISHING.md](docs/PUBLISHING.md).
+Design notes: [docs/DESIGN.md](docs/DESIGN.md). Publishing notes: [docs/PUBLISHING.md](docs/PUBLISHING.md). Handoff notes: [docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Privacy
 
